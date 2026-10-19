@@ -88,7 +88,19 @@ function fakeSubagents({ reply, delayMs = 0, resultDelayMs = 0, child, legacy = 
           output: outcome.text === undefined ? [] : [{ type: 'text', text: outcome.text }],
           stopReason: outcome.stopReason ?? 'error',
         }
-      : { output: [{ type: 'text', text: outcome.text ?? `产出：${request.label}` }], stopReason: 'completed' });
+      : {
+          // 门类任务（review / verification）必须带机器可读判定，否则宿主按 fail-closed 判失败。
+          // 夹具统一补一行 PASS，让"调度机制"类测试不被质量门干扰。
+          // 门类任务要带**可复核的证据**（gates.requireEvidence 默认开）：
+          // 文件:行号 + 退出码，否则 PASS 也会被判失败。
+          output: [
+            {
+              type: 'text',
+              text: outcome.text ?? `产出：${request.label}\n证据：src/app.js:12（命令退出码 0）\n\nVERDICT: PASS`,
+            },
+          ],
+          stopReason: 'completed',
+        });
     if (outcome.hold === true) return new Promise(() => {}); // 永不返回：模拟卡死/空转
     // ⚠️ 延迟的是 **result**（子代理跑着不交结果），看门狗才会真的工作起来。
     // delayMs 延迟的是派发返回本身，看门狗根本没机会跑。
@@ -194,7 +206,15 @@ test('任务图：实现类任务带上全局验收标准，并自带基础标�
 
   const executor = graph.tasks.find((task) => task.id === 't-executor');
   assert.ok(executor.acceptance.some((item) => item.includes('用户可以登录')), '应带上用户验收标准');
-  assert.ok(executor.acceptance.some((item) => item.includes('构建或类型检查通过')), '应自带基础标准');
+  // 验收项必须与语言/平台无关：不能写死"构建或类型检查"（纯 Python / 文档项目无此环节）
+  assert.ok(
+    executor.acceptance.some((item) => item.includes('项目自身可用的验证手段')),
+    '应自带与技术栈无关的基础标准',
+  );
+  assert.ok(
+    !executor.acceptance.some((item) => /^构建或类型检查/.test(item)),
+    '不得写死构建/类型检查环节',
+  );
 
   // 审查类任务不重复携带用户验收标准（它审查的是变更，不是需求）
   const review = graph.tasks.find((task) => task.id === 't-review');
@@ -316,7 +336,8 @@ test('闸门：批准后才允许派发', async () => {
     await planTeam({ ...base, task: '改个按钮颜色' });
     const approval = await approveTeam(base);
     assert.equal(approval.approved, true);
-    assert.equal(approval.phase, 'running');
+    // 批准只记 approvedAt + 图指纹，不改运行状态（改了会让"跑过一轮"绕过闸门）
+    assert.equal(approval.phase, 'staged');
 
     const started = await startTeamRun(base);
     assert.equal(started.started, true);

@@ -103,11 +103,13 @@ test('插件注册了工具、提示段与状态路由', async () => {
       'teams_approve',
       'teams_plan',
       'teams_retry',
+      'teams_role_manage',
       'teams_role_save',
       'teams_roles',
       'teams_route',
       'teams_run',
       'teams_status',
+      'teams_stop',
     ]);
 
     assert.equal(ctx.__sections.length, 1, '应注册一段系统提示');
@@ -115,19 +117,18 @@ test('插件注册了工具、提示段与状态路由', async () => {
     assert.ok(ctx.__sections[0].text.includes('teams_route'), '提示段应提到工具名');
     assert.ok(ctx.__sections[0].text.includes('teams_approve'), '提示段应说明审批闸门');
 
-    assert.equal(ctx.__routes.length, 2, '应注册两条路由：状态快照 + 角色精灵图');
-    assert.ok(
-      ctx.__routes.some((route) => String(route.path).includes('/state')),
-      '应有状态路由',
-    );
-    assert.ok(
-      ctx.__routes.some((route) => String(route.path).includes('/asset')),
-      '应有精灵图资源路由',
-    );
-    assert.equal(ctx.__routes[0].path, '/plugins/dsh-teams/asset');
-    assert.equal(ctx.__routes[0].kind, 'exact');
-    assert.equal(ctx.__routes[1].path, '/plugins/dsh-teams/state');
-    assert.equal(ctx.__routes[1].kind, 'exact');
+    const paths = ctx.__routes.map((route) => String(route.path));
+    assert.deepEqual(paths, [
+      '/plugins/dsh-teams/asset',
+      '/plugins/dsh-teams/state',
+      '/plugins/dsh-teams/roles/body',
+      '/plugins/dsh-teams/roles',
+    ]);
+    for (const route of ctx.__routes) assert.equal(route.kind, 'exact');
+    assert.ok(paths.some((path) => path.endsWith('/state')), '应有团队快照路由');
+    assert.ok(paths.some((path) => path.endsWith('/asset')), '应有精灵图资源路由');
+    assert.ok(paths.some((path) => path.endsWith('/roles')), '应有角色库路由（GET/POST）');
+    assert.ok(paths.some((path) => path.endsWith('/roles/body')), '应能取角色契约正文');
   });
 });
 

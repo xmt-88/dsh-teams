@@ -13,6 +13,7 @@ import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
 
 import { route } from './lib/router.js';
 import { readField } from './lib/config.js';
@@ -21,6 +22,7 @@ import { stateRootOf, ensureTeam, readTeam, readTasks, mutateTeam, appendEvent, 
 import { writeFileAtomic } from './lib/state.js';
 import { authenticatedWebRoutes, registerStateRoutes } from './lib/web-routes.js';
 import { planTeam, approveTeam, startTeamRun, retryFailedTeam, stopRun, isRunning } from './lib/scheduler.js';
+import { readDisabledRoles, writeDisabledRoles, validateToggle } from './lib/role-state.js';
 import { registerCommands } from './lib/commands.js';
 import { summarize, truncate } from './lib/tasks.js';
 
@@ -108,7 +110,6 @@ export const Config = z.object({
   ui: z
     .object({
       locale: z.string().default('zh-CN').volatile(),
-      openTabOnPlan: z.boolean().default(true).volatile(),
     })
     .default({}),
 });
@@ -705,6 +706,13 @@ function registerTools(ctx, config) {
         },
         read_budget: { type: 'integer', description: '最多读取文件数，默认 6' },
         output_budget: { type: 'integer', description: '输出字数上限，默认 900' },
+        triggers: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            '触发词：任务描述命中其中任一词时，这个专家会被自动插进流水线（插在实现步骤之前，产出作为依赖喂给执行者）。例如 python、pytest、django',
+        },
+        category: { type: 'string', description: '分类（仅用于界面分组），例如 数据 / 前端 / 文档' },
       },
       output: {
         schema: {
@@ -739,6 +747,8 @@ function registerTools(ctx, config) {
           tier: args.tier,
           readBudget: args.read_budget,
           outputBudget: args.output_budget,
+          triggers: args.triggers,
+          category: args.category,
         });
         if (!validation.ok) {
           return { saved: false, errors: validation.errors };
@@ -746,7 +756,8 @@ function registerTools(ctx, config) {
 
         const slug = String(args.role_id).trim().toLowerCase();
         // 覆盖内置角色是允许的（用户自定义优先），但要如实告知
-        const overrodeBuiltin = (await loadRoles(rolesDir)).bySlug.get(slug)?.builtin === true;
+        const library = await loadRoles(rolesDir);
+        const overrodeBuiltin = library.allBySlug?.get(slug)?.builtin === true;
 
         await ensureStateDirs(stateRoot);
         const file = join(rolesDir, `${slug}.md`);
@@ -764,6 +775,118 @@ function registerTools(ctx, config) {
       },
     }),
   );
+
+  /* ---------------------------------------------------------------- *
+   * 9) teams_stop — 停止正在跑的调度循环
+   * ---------------------------------------------------------------- */
+  ctx.tools.register(
+    defineTool({
+      name: 'teams_stop',
+      description:
+        '停止当前会话正在运行的调度循环：不再挑新任务，并中断正在等待的子代理。已派发任务的产出会照常落盘。没有循环在跑时返回 stopped=false。',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { stopped: { type: 'boolean', required: true }, reason: { type: 'string' } },
+        },
+        render: (_args, value) =>
+          renderText(value.stopped ? '已请求停止：不再派发新任务' : `没有可停止的循环：${value.reason ?? '当前没有在跑'}`),
+      },
+      async execute(_args, exec) {
+        const { captainSessionId, workspace } = captainOf(exec);
+        const stateRoot = stateRootOf(workspace, readField(config?.stateDir, '.dsh-teams'));
+        const stopped = stopRun(stateRoot, captainSessionId);
+        await appendEvent({
+          stateRoot,
+          type: 'gate',
+          team: captainSessionId,
+          data: { action: 'stop', stopped },
+        }).catch(() => {});
+        return stopped ? { stopped: true } : { stopped: false, reason: '当前没有在跑的调度循环' };
+      },
+    }),
+  );
+
+  /* ---------------------------------------------------------------- *
+   * 10) teams_role_manage — 启停 / 删除角色
+   * ---------------------------------------------------------------- */
+  ctx.tools.register(
+    defineTool({
+      name: 'teams_role_manage',
+      description:
+        '管理角色：enable/disable 启停任意角色（停用后不会被流水线派发；executor 与 verifier 是核心角色不可停用），delete 删除自定义角色（内置角色不可删除）。',
+      parameters: {
+        action: {
+          type: 'string',
+          required: true,
+          enum: ['enable', 'disable', 'delete'],
+          description: '操作类型',
+        },
+        role: { type: 'string', required: true, description: '角色 id 或显示名，例如 db-tuning' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            reason: { type: 'string' },
+            role: { type: 'string' },
+            enabled: { type: 'boolean' },
+          },
+        },
+        render: (_args, value) =>
+          renderText(
+            value.ok
+              ? `${value.role}：${value.enabled === undefined ? '已删除' : value.enabled ? '已启用' : '已停用'}`
+              : `未执行：${value.reason ?? ''}`,
+          ),
+      },
+      async execute(args, exec) {
+        const { workspace } = captainOf(exec);
+        const stateRoot = stateRootOf(workspace, readField(config?.stateDir, '.dsh-teams'));
+        const rolesDir = userRolesDir(stateRoot);
+        const library = await loadRoles(rolesDir);
+        const role = resolveRole(library, args.role);
+        if (role === undefined) return { ok: false, reason: `找不到角色：${args.role}` };
+
+        if (args.action === 'delete') {
+          if (role.builtin === true) return { ok: false, reason: '内置角色不可删除（只能停用）' };
+          await rm(role.path, { force: true });
+          invalidateRoles(stateRoot);
+          const disabled = await readDisabledRoles(stateRoot);
+          disabled.delete(role.slug);
+          await writeDisabledRoles(stateRoot, disabled);
+          await appendEvent({
+            stateRoot,
+            type: 'note',
+            team: null,
+            data: { level: 'info', message: `自定义角色已删除：${role.slug}` },
+          });
+          return { ok: true, role: role.slug };
+        }
+
+        const enabled = args.action === 'enable';
+        const allowed = validateToggle(role.slug, enabled);
+        if (!allowed.ok) return { ok: false, reason: allowed.reason };
+
+        const disabled = await readDisabledRoles(stateRoot);
+        if (enabled) disabled.delete(role.slug);
+        else disabled.add(role.slug);
+        await writeDisabledRoles(stateRoot, disabled);
+        invalidateRoles(stateRoot);
+        await appendEvent({
+          stateRoot,
+          type: 'gate',
+          team: null,
+          data: { action: enabled ? 'role-enable' : 'role-disable', role: role.slug },
+        });
+        return { ok: true, role: role.slug, enabled };
+      },
+    }),
+  );
 }
 
 /**
@@ -775,14 +898,16 @@ function registerTools(ctx, config) {
 function usageSectionText() {
   return [
     '## 团队流水线（dsh-teams）',
-    '工具：`teams_route` 决策路径；`teams_plan` 生成任务图；`teams_approve` 批准；`teams_run` 启动；`teams_status` 看进度；`teams_roles` 查角色。',
-    '用户也可直接用斜杠命令：`/teams-plan <目标>`、`/teams-status`、`/teams-approve`、`/teams-run`、`/teams-roles`。',
+    '工具：`teams_route` 决策路径；`teams_plan` 生成任务图；`teams_approve` 批准；`teams_run` 启动；`teams_status` 看进度；`teams_stop` 停止；`teams_retry` 从失败处续跑；`teams_roles` 查角色；`teams_role_save` 新建/覆盖自定义角色；`teams_role_manage` 启停或删除角色。',
+    '用户也可直接用斜杠命令：`/teams-plan <目标>`、`/teams-status`、`/teams-approve`、`/teams-run`、`/teams-retry`、`/teams-stop`、`/teams-roles`。',
     '标准流程：`teams_route` 定路径 → `teams_plan` 生成任务图 → **把任务图给用户确认** → `teams_approve` → `teams_run`。',
     '闸门是硬的：未调用 `teams_approve` 前 `teams_run` 会拒绝执行，不要绕过用户确认。',
     '`teams_run` 立即返回并在后台跑，用 `teams_status` 或团队视图看进度，不要反复轮询。',
     '不要用：单纯问答、信息查询、读文件解释、单行改动、以及用户已明确指定做法时——这些直接做即可。',
     '路径含义：快速=小改直接实现并审查；标准=先需求后架构再实现；完整=多一轮批判与安全审查；调试=先定位根因再修；部署=备份与回滚优先并独立验证。',
     '涉及认证、支付、凭据、数据安全的改动不要降级路径。',
+    '质量门是可机器判定的：评审/验证类角色必须在产出末行写 `VERDICT: PASS|FAIL|BLOCKED`，缺这行按未通过处理；判 FAIL 会自动把实现步骤退回重做（轮数受 maxReviewRounds 限制）。',
+    '角色可停用：被停用的角色不会被派发；`executor` 与 `verifier` 是核心角色不可停用。自定义角色可带触发词，任务命中时会被自动插进流水线。',
   ].join('\n');
 }
 
@@ -935,9 +1060,6 @@ export function apply(ctx, config) {
     ui: {
       get locale() {
         return read(config?.ui?.locale, 'zh-CN');
-      },
-      get openTabOnPlan() {
-        return read(config?.ui?.openTabOnPlan, true);
       },
     },
   };

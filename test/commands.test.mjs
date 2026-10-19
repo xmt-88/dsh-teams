@@ -82,12 +82,17 @@ function setup(config = CONFIG, subagents) {
  * 注册
  * ================================================================== */
 
-test('注册六个命令，名字与描述都可用', () => {
+test('注册七个命令，名字与描述都可用', () => {
   const { definitions } = setup();
-  assert.deepEqual(
-    [...definitions.keys()].sort(),
-    ['teams-approve', 'teams-plan', 'teams-retry', 'teams-roles', 'teams-run', 'teams-status'],
-  );
+  assert.deepEqual([...definitions.keys()].sort(), [
+    'teams-approve',
+    'teams-plan',
+    'teams-retry',
+    'teams-roles',
+    'teams-run',
+    'teams-status',
+    'teams-stop',
+  ]);
   for (const definition of definitions.values()) {
     assert.ok(definition.description.length > 0, `${definition.name} 应有描述`);
     assert.equal(typeof definition.handler, 'function');
@@ -101,7 +106,7 @@ test('注册六个命令，名字与描述都可用', () => {
 
 test('disposer 能注销全部命令', () => {
   const { definitions, dispose } = setup();
-  assert.equal(definitions.size, 6);
+  assert.equal(definitions.size, 7);
   dispose();
   assert.equal(definitions.size, 0);
 });

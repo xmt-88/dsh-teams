@@ -836,7 +836,8 @@ test('渲染：七个分组、每个可配置项一个控件，默认值走占�
   assert.equal(groups.length, 7, '应为七组：状态与路径/路由/调度/角色超时/看门狗/质量门/界面');
 
   const controls = controlsOf(box.tree);
-  assert.equal(controls.length, 19, `应有 19 个控件（Config 的 volatile 叶子数），实际 ${controls.length}`);
+  // 18 = Config 的 volatile 叶子数（ui.openTabOnPlan 已移除：客户端无法实现自动开标签）
+  assert.equal(controls.length, 18, `应有 18 个控件（Config 的 volatile 叶子数），实际 ${controls.length}`);
 
   for (const path of [
     'stateDir',

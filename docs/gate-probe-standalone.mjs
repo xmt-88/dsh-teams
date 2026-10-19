@@ -140,20 +140,24 @@ await ws(async (dir) => {
   log('F 批准后追加任务', `started=${run.started} 派发=${fake.calls.join(',')} → 期望：拒绝或至少重批`);
 });
 
-/* ---- G：两个 gate 开关有没有差别 ---- */
-await ws(async (dir) => {
-  const fake = fakeSubagents();
-  const b = base(dir, 'g', {
-    ctx: fake.ctx,
-    config: { ...CONFIG, gates: { requireEvidence: false, securityBlock: false } },
+/* ---- G：gates.requireEvidence 有没有差别（同一条"PASS 但无证据"的产出） ---- */
+const noEvidenceReply = () => '做完了，都通过。\n\nVERDICT: PASS';
+for (const [label, gates] of [['开', { requireEvidence: true, securityBlock: true }], ['关', { requireEvidence: false, securityBlock: false }]]) {
+  await ws(async (dir) => {
+    const fake = fakeSubagents(noEvidenceReply);
+    const b = base(dir, `g-${label}`, { ctx: fake.ctx, config: { ...CONFIG, gates } });
+    await planTeam({ ...b, task: '改个按钮颜色' });
+    await approveTeam(b);
+    await startTeamRun(b);
+    for (let i = 0; i < 60; i += 1) {
+      const team = await readTeam(join(dir, '.dsh-teams'), `g-${label}`);
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const team = await readTeam(join(dir, '.dsh-teams'), `g-${label}`);
+    console.log(`G requireEvidence=${label}  phase=${team?.phase} → 期望：开=failed（无证据不算通过），关=done`);
   });
-  await planTeam({ ...b, task: '改个按钮颜色' });
-  await approveTeam(b);
-  await startTeamRun(b);
-  await new Promise((r) => setTimeout(r, 400));
-  const team = await readTeam(join(dir, '.dsh-teams'), 'g');
-  log('G gates 全关', `phase=${team?.phase} → 与全开对照：无差别则视为死配置`);
-});
+}
 
 /* ---- H：verifier 报 FAIL / review 报 CRITICAL ---- */
 await ws(async (dir) => {

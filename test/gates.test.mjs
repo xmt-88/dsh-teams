@@ -1,0 +1,552 @@
+/**
+ * 质量门与角色管理的测试。
+ *
+ * 这些用例对应 2026-10-20 审计里的 P0/P1/P2：
+ *   - P0-1 验证员的 FAIL 必须改变状态（以前"跑完就算过"）
+ *   - P0-2 驳回 → 退回实现步骤重做，轮数受 maxReviewRounds 限制
+ *   - P1-1 批准的是"这一张图"，不是"这个阶段"
+ *   - P1-5 配置项必须真的生效（routing / gates / maxReviewRounds）
+ *   - P2 自定义角色按触发词插入流水线；停用的角色不被派发
+ */
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import { parseVerdict, isGateKind, hasEvidence, GATE_KINDS } from '../lib/verdict.js';
+import { route, adaptSteps, buildSteps, PATH_TEMPLATES } from '../lib/router.js';
+import { validateCustomRole, loadRoles } from '../lib/roles.js';
+import { graphFingerprint, planTeam, approveTeam, startTeamRun } from '../lib/scheduler.js';
+import { readTeam, readTasks, userRolesDir, appendJsonl } from '../lib/state.js';
+import { readDisabledRoles, writeDisabledRoles, validateToggle, CORE_ROLES } from '../lib/role-state.js';
+import { buildRolesPayload, applyRoleAction } from '../lib/web-routes.js';
+
+/* ================================================================== *
+ * 判定行解析
+ * ================================================================== */
+
+test('判定行：容忍大小写、全角冒号、加粗与正文引用，取最后一次出现', () => {
+  assert.equal(parseVerdict('结论：FAIL\n\nVERDICT: FAIL'), 'FAIL');
+  assert.equal(parseVerdict('VERDICT: pass'), 'PASS');
+  assert.equal(parseVerdict('**VERDICT:** BLOCKED'), 'BLOCKED');
+  assert.equal(parseVerdict('格式示例 VERDICT: PASS\n\n实际结论\nVERDICT: FAIL'), 'FAIL');
+  assert.equal(parseVerdict('正文里写了通过，但没有判定行'), undefined);
+  assert.equal(parseVerdict(''), undefined);
+  assert.equal(parseVerdict(undefined), undefined);
+});
+
+test('门类任务：只有 review / verification 需要判定', () => {
+  assert.deepEqual([...GATE_KINDS], ['review', 'verification']);
+  assert.equal(isGateKind('review'), true);
+  assert.equal(isGateKind('verification'), true);
+  assert.equal(isGateKind('implementation'), false);
+  assert.equal(isGateKind('work'), false);
+});
+
+test('证据判定：命令+退出码、文件:行号、"不适用"都算证据，纯断言不算', () => {
+  assert.equal(hasEvidence('跑完了，都通过'), false, '空口断言不是证据');
+  assert.equal(hasEvidence('改了 src/app.js:42'), true, '文件:行号算');
+  assert.equal(hasEvidence('`npm test` 退出码 0'), true, '退出码算');
+  assert.equal(hasEvidence('C:\\work\\a.js:12 已改'), true, 'Windows 路径也算');
+  assert.equal(hasEvidence('本项目无类型检查环节，不适用'), true, '诚实说明算');
+  assert.equal(hasEvidence(undefined), false);
+});
+
+/* ================================================================== *
+ * 路由：阈值可配置 + 停用剪枝 + 触发词插入
+ * ================================================================== */
+
+test('路由阈值来自配置：fastMax/standardMax 改了，路径跟着变', () => {
+  // 3 个文件 → 规模=1（中等改动），三维加和 = 1
+  const input = { taskText: '改个按钮颜色', filesTouched: 3 };
+  const strict = route({ ...input, routing: { fastMax: 0, standardMax: 1 } });
+  const loose = route({ ...input, routing: { fastMax: 1, standardMax: 4 } });
+  const middle = route({ ...input, routing: { fastMax: 0, standardMax: 0 } });
+  assert.equal(loose.path, 'fast', 'total=1 <= fastMax=1 → 快速');
+  assert.equal(strict.path, 'standard', 'total=1 > fastMax=0 且 <= standardMax=1 → 标准');
+  assert.equal(middle.path, 'full', 'total=1 > standardMax=0 → 完整');
+});
+
+test('风险短路可关闭：关掉后高风险只加分、不再强制完整路径', () => {
+  const text = '支付回调签名校验失败';
+  const on = route({ taskText: text, routing: { riskShortCircuit: true } });
+  const off = route({ taskText: text, routing: { riskShortCircuit: false }, filesTouched: 0, linesTouched: 1 });
+  assert.equal(on.path, 'full', '开着时风险=2 直接完整路径');
+  assert.notEqual(off.path, 'full', '关掉后不再无视其他维度');
+});
+
+test('停用的角色会被剪掉，且下游依赖自动继承被剪步骤的上游', () => {
+  const steps = buildSteps(PATH_TEMPLATES.full, false);
+  const adapted = adaptSteps(steps, { roles: [{ slug: 'critic', builtin: true, enabled: false }], matchText: '' });
+  assert.equal(
+    adapted.some((step) => step.role === 'critic'),
+    false,
+    '停用的 critic 不应出现在图里',
+  );
+  const executor = adapted.find((step) => step.id === 'executor');
+  assert.deepEqual(executor.deps, ['architect'], 'executor 应继承 critic 的上游，而不是留下悬空依赖');
+  for (const step of adapted) {
+    for (const dep of step.deps) {
+      assert.ok(
+        adapted.some((item) => item.id === dep),
+        `${step.id} 的依赖 ${dep} 必须真实存在`,
+      );
+    }
+  }
+});
+
+test('自定义角色按触发词插入实现步骤之前，实现步骤依赖它', () => {
+  const roles = [{ slug: 'py-expert', builtin: false, enabled: true, triggers: ['python', 'pytest'] }];
+  const decision = route({ taskText: '给 pytest 加一个 fixture', filesTouched: 1, roles });
+  const ids = decision.steps.map((step) => step.id);
+  assert.ok(ids.includes('expert-py-expert'), '命中触发词的专家应被插入');
+  const executor = decision.steps.find((step) => step.kind === 'implementation');
+  assert.ok(executor.deps.includes('expert-py-expert'), '实现步骤应依赖专家产出');
+  assert.ok(
+    ids.indexOf('expert-py-expert') < ids.indexOf(executor.id),
+    '专家步骤应排在实现步骤之前',
+  );
+});
+
+test('没命中触发词的自定义角色不会被插入', () => {
+  const roles = [{ slug: 'py-expert', builtin: false, enabled: true, triggers: ['python'] }];
+  const decision = route({ taskText: '调整一下按钮圆角', filesTouched: 1, roles });
+  assert.equal(
+    decision.steps.some((step) => step.id === 'expert-py-expert'),
+    false,
+  );
+});
+
+test('停用的自定义角色即使命中触发词也不插入', () => {
+  const roles = [{ slug: 'py-expert', builtin: false, enabled: false, triggers: ['python'] }];
+  const decision = route({ taskText: 'python 项目改配置', filesTouched: 1, roles });
+  assert.equal(
+    decision.steps.some((step) => step.id === 'expert-py-expert'),
+    false,
+  );
+});
+
+/* ================================================================== *
+ * 角色库：覆盖标记 / 启停 / 校验
+ * ================================================================== */
+
+async function withDir(run) {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-teams-gate-'));
+  try {
+    await run(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test('自定义角色与内置同 slug：内置仍在列表里，且两边都标出覆盖关系', async () => {
+  await withDir(async (stateRoot) => {
+    const rolesDir = userRolesDir(stateRoot);
+    await mkdir(rolesDir, { recursive: true });
+    const { markdown } = validateCustomRole({
+      slug: 'critic',
+      name: '自定义批判者',
+      description: '覆盖内置版本',
+      prompt: '你是批判者。',
+    });
+    await writeFile(join(rolesDir, 'critic.md'), markdown);
+
+    const library = await loadRoles(rolesDir);
+    const builtinCritic = library.roles.filter((role) => role.slug === 'critic');
+    assert.equal(builtinCritic.length, 2, '内置与自定义都应出现在列表里（以前内置会消失）');
+    assert.equal(builtinCritic.filter((role) => role.builtin).length, 1);
+    assert.equal(builtinCritic.find((role) => role.builtin).overridden, true);
+    assert.equal(builtinCritic.find((role) => !role.builtin).overrides, true);
+    assert.equal(library.bySlug.get('critic').builtin, false, '解析时自定义胜出');
+  });
+});
+
+test('启停：状态落盘、读回一致；核心角色禁止停用', async () => {
+  await withDir(async (stateRoot) => {
+    assert.deepEqual([...(await readDisabledRoles(stateRoot))], [], '初始为空');
+    await writeDisabledRoles(stateRoot, ['critic', 'explore', 'critic']);
+    const disabled = await readDisabledRoles(stateRoot);
+    assert.deepEqual([...disabled].sort(), ['critic', 'explore'], '去重后落盘');
+    for (const core of CORE_ROLES) {
+      assert.equal(validateToggle(core, false).ok, false, `${core} 不能停用`);
+    }
+    assert.equal(validateToggle('critic', false).ok, true);
+    assert.equal(validateToggle('critic', true).ok, true);
+  });
+});
+
+test('角色写操作：停用 / 删除内置被拒 / 保存带触发词的自定义角色', async () => {
+  await withDir(async (stateRoot) => {
+    const before = await buildRolesPayload(stateRoot);
+    assert.equal(before.roles.length, 16, '内置 16 个');
+
+    const off = await applyRoleAction({ stateRoot, body: { action: 'toggle', role: 'critic', enabled: false } });
+    assert.equal(off.ok, true);
+    assert.equal(off.roles.find((role) => role.slug === 'critic').enabled, false);
+
+    const coreOff = await applyRoleAction({ stateRoot, body: { action: 'toggle', role: 'executor', enabled: false } });
+    assert.equal(coreOff.ok, false, '核心角色不能停用');
+
+    const deleteBuiltin = await applyRoleAction({ stateRoot, body: { action: 'delete', role: 'critic' } });
+    assert.equal(deleteBuiltin.ok, false, '内置角色不可删除');
+
+    const saved = await applyRoleAction({
+      stateRoot,
+      body: {
+        action: 'save',
+        role_id: 'py-expert',
+        name: 'Python 专家',
+        description: '专治 Python 项目',
+        prompt: '你是 Python 专家。',
+        permissions: 'execute',
+        tier: 'medium',
+        triggers: ['python', 'pytest'],
+        category: '后端',
+      },
+    });
+    assert.equal(saved.ok, true, saved.reason ?? '');
+    const custom = saved.roles.find((role) => role.slug === 'py-expert');
+    assert.deepEqual(custom.triggers, ['python', 'pytest'], '触发词应落盘并能读回');
+    assert.equal(custom.builtin, false);
+
+    const removed = await applyRoleAction({ stateRoot, body: { action: 'delete', role: 'py-expert' } });
+    assert.equal(removed.ok, true);
+    assert.equal(removed.roles.some((role) => role.slug === 'py-expert'), false);
+  });
+});
+
+/* ================================================================== *
+ * 闸门：指纹 / 批准
+ * ================================================================== */
+
+test('任务图指纹：同图稳定，改一个字段就变', () => {
+  const a = { tasks: [{ id: 'x', role: 'executor', kind: 'implementation', deps: [], acceptance: ['a'] }] };
+  const b = { tasks: [{ id: 'x', role: 'executor', kind: 'implementation', deps: [], acceptance: ['a'] }] };
+  const c = { tasks: [{ id: 'x', role: 'executor', kind: 'implementation', deps: [], acceptance: ['b'] }] };
+  assert.equal(graphFingerprint(a), graphFingerprint(b));
+  assert.notEqual(graphFingerprint(a), graphFingerprint(c));
+  assert.equal(graphFingerprint({ tasks: [] }).length, 16);
+});
+
+function fakeSubagents(reply) {
+  const calls = [];
+  const provider = {
+    name: 'spawn',
+    capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true },
+  };
+  return {
+    calls,
+    ctx: {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: (name) => (name === 'spawn' ? provider : undefined),
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({
+                    output: [{ type: 'text', text: reply(spec.label) }],
+                    stopReason: 'completed',
+                  }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    },
+  };
+}
+
+const CONFIG = {
+  stateDir: '.dsh-teams',
+  scheduler: { maxParallel: 1, maxRetries: 0, maxReviewRounds: 2 },
+  gates: { requireEvidence: true, securityBlock: true },
+  timeouts: { enabled: false },
+};
+
+async function runFast(dir, reply, name = 's') {
+  const fake = fakeSubagents(reply);
+  const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: name, workspace: dir };
+  await planTeam({ ...base, task: '改个按钮颜色' });
+  await approveTeam(base);
+  const started = await startTeamRun(base);
+  for (let i = 0; i < 120; i += 1) {
+    const team = await readTeam(join(dir, '.dsh-teams'), name);
+    if (team?.phase === 'done' || team?.phase === 'failed') return { fake, team, started };
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const team = await readTeam(join(dir, '.dsh-teams'), name);
+  return { fake, team, started };
+}
+
+test('质量门：验证员写 FAIL → 团队失败（不再"跑完就算过"）', async () => {
+  await withDir(async (dir) => {
+    const { team } = await runFast(dir, (label) =>
+      label.includes('verifier') || label.includes('code-reviewer')
+        ? '证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+        : '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
+    );
+    assert.equal(team.phase, 'failed', '有任务判 FAIL，团队必须失败');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 's');
+    const gate = graph.tasks.find((task) => task.kind === 'review' || task.kind === 'verification');
+    assert.ok(gate);
+    assert.notEqual(gate.status, 'done', '判 FAIL 的门不应该是 done');
+  });
+});
+
+test('质量门：缺 VERDICT 行按未通过处理（fail-closed）', async () => {
+  await withDir(async (dir) => {
+    const { team } = await runFast(dir, () => '做完了，都通过。证据：src/app.js:12 退出码 0');
+    assert.equal(team.phase, 'failed', '没有判定行不能当通过');
+  });
+});
+
+test('质量门：证据门开启时，PASS 但无证据也判失败', async () => {
+  await withDir(async (dir) => {
+    const { team } = await runFast(dir, () => '都通过了。\n\nVERDICT: PASS');
+    assert.equal(team.phase, 'failed', 'requireEvidence=true 时必须能复核');
+  });
+});
+
+test('质量门：证据门关闭时，同一条无证据的 PASS 通过', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '都通过了。\n\nVERDICT: PASS');
+    const base = {
+      ctx: fake.ctx,
+      config: { ...CONFIG, gates: { requireEvidence: false, securityBlock: false } },
+      agent: { id: 'cap' },
+      captainSessionId: 'g',
+      workspace: dir,
+    };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 120; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'g');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '关掉证据门后应通过');
+  });
+});
+
+test('闸门：批准后改动任务图 → 拒绝启动，且不下发任何子代理', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'f', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = join(dir, '.dsh-teams');
+    const { mutateTasks } = await import('../lib/state.js');
+    await mutateTasks(stateRoot, 'f', (graph) => {
+      graph.tasks.push({
+        id: 't-injected',
+        role: 'security-reviewer',
+        roleName: '安全审查员',
+        kind: 'review',
+        deps: [],
+        status: 'pending',
+        acceptance: [],
+        evidence: [],
+        attempts: [],
+        order: 9,
+      });
+      return graph;
+    });
+    const started = await startTeamRun(base);
+    assert.equal(started.started, false, '图变了就不该再放行');
+    assert.match(started.reason, /重新批准/, '应说清为什么要重批');
+    assert.equal(fake.calls.length, 0, '一个子代理都不该下发');
+  });
+});
+
+test('闸门：team 记录损坏被重建后，没有 approvedAt 不得启动', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'd', workspace: dir };
+    const { mutateTeam } = await import('../lib/state.js');
+    const { ensureTeam } = await import('../lib/state.js');
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    const stateRoot = join(dir, '.dsh-teams');
+    await mutateTeam(stateRoot, 'd', (team) => {
+      team.phase = 'idle';
+      delete team.approvedAt;
+      return team;
+    });
+    const started = await startTeamRun(base);
+    assert.equal(started.started, false, 'phase 不是 staged 也不能放行（判据看 approvedAt）');
+    assert.equal(fake.calls.length, 0);
+  });
+});
+
+test('事件流：并发追加不丢（真追加，不再读-改-写）', async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, 'events.jsonl');
+    await Promise.all(Array.from({ length: 20 }, (_, index) => appendJsonl(file, { index })));
+    const lines = (await readFile(file, 'utf8')).trim().split('\n').filter(Boolean);
+    assert.equal(lines.length, 20, '20 条并发事件必须全部落盘');
+  });
+});
+
+test('质量门：判 FAIL 会退回实现步骤重做，超过 maxReviewRounds 后不再退', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    let rounds = 0;
+    const provider = {
+      name: 'spawn',
+      capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true },
+    };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                let text = '实现完成。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS';
+                if (spec.label.includes('code-reviewer')) {
+                  rounds += 1;
+                  text =
+                    rounds <= 2
+                      ? 'CRITICAL src/app.js:12。证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+                      : '复审通过。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS';
+                }
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'rw', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'rw');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '两轮驳回后第三轮通过，团队应完成');
+    const executorCalls = calls.filter((label) => label.includes(':t-executor:')).length;
+    assert.equal(executorCalls, 3, '执行者应被退回重做 2 次（共 3 次派发）');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'rw');
+    const review = graph.tasks.find((task) => task.kind === 'review');
+    assert.equal(review.reviewRound, 2, '记下驳回了 2 轮');
+    assert.equal(review.verdict, 'PASS');
+  });
+});
+
+test('质量门：驳回预算用尽后仍判 FAIL，团队失败', async () => {
+  await withDir(async (dir) => {
+    const { team } = await runFast(
+      dir,
+      (label) =>
+        label.includes('code-reviewer')
+          ? '一直有问题。证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+          : '实现完成。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
+    );
+    assert.equal(team.phase, 'failed', '永远不允许通过 → 团队失败');
+  });
+});
+
+test('停止：运行中调用 stopRun 后不再派发新任务', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    let release;
+    const gateOn = new Promise((resolve) => {
+      release = resolve;
+    });
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                // 第一个任务一直不返回，好让循环停在"运行中"
+                if (calls.length === 1) {
+                  return {
+                    childId: 'c1',
+                    result: gateOn.then(() => ({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' })),
+                    dispose: async () => {},
+                  };
+                }
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({
+                    output: [{ type: 'text', text: '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS' }],
+                    stopReason: 'completed',
+                  }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'st', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const stopped = stopRun(stateRootOf(dir, CONFIG.stateDir), 'st');
+    assert.equal(stopped, true, '应该找到了在跑的循环');
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const dispatched = calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(calls.length, dispatched, '停止后不应再派发新任务');
+    const team = await readTeam(join(dir, '.dsh-teams'), 'st');
+    assert.notEqual(team?.phase, 'running', '停止后不应停在 running');
+  });
+});
+
+test('重建：调度循环运行中拒绝重建任务图（否则新图会被旧循环执行）', async () => {
+  await withDir(async (dir) => {
+    let release;
+    const gateOn = new Promise((resolve) => {
+      release = resolve;
+    });
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async () => ({
+                childId: 'c1',
+                result: gateOn.then(() => ({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' })),
+                dispose: async () => {},
+              }),
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'rb', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const again = await planTeam({ ...base, task: '换成另一件事', rebuild: true });
+    assert.equal(again.rebuilt, false, '运行中不得重建');
+    assert.match(again.reason, /正在运行/, '应说清原因');
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+});
