@@ -1,0 +1,18 @@
+# 依赖与产物
+node_modules/
+*.log
+
+# 运行期状态（团队记录、任务图、事件流、运行历史）——属于会话数据，不进仓库
+.dsh-teams/
+test/.dsh-teams/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# 临时调试产物
+*.tmp
+.tmp/

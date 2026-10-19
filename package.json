@@ -1,0 +1,48 @@
+{
+  "name": "@dsh-external/dsh-teams",
+  "version": "0.1.0",
+  "description": "DSH Teams：任务感知的多角色团队流水线。按任务复杂度智能路由到五条路径（快速/标准/完整/调试/部署），以任务图编排专业子代理，用宿主级质量门与熔断器保障交付，并在 Web GUI 提供团队工作视图。",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "assets",
+    "locale",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "meta": {
+    "title": "DSH Teams",
+    "description": "任务感知的多角色团队流水线：智能路由、任务图编排、宿主级质量门、团队工作视图。"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "verify": "node --test \"test/*.test.mjs\""
+  },
+  "license": "MIT"
+}

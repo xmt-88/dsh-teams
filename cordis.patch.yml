@@ -1,0 +1,25 @@
+# dsh-teams bundle patch: mounts the teams plugin into the host composition.
+#
+# The plugin registers its `teams_*` tools into the shared `tools` registry and
+# one concise usage section into the global system prompt, so every session of
+# the profile can drive the team pipeline through natural language.
+- insert:
+    - id: dsh-teams
+      name: '@dsh-external/dsh-teams'
+      config:
+        # Team state lives under <session workspace>/<stateDir>/
+        stateDir: .dsh-teams
+        routing:
+          riskShortCircuit: true
+          fastMax: 1
+          standardMax: 4
+        scheduler:
+          maxParallel: 4
+          maxRetries: 2
+          maxReviewRounds: 3
+        gates:
+          requireEvidence: true
+          securityBlock: true
+        ui:
+          locale: zh-CN
+          openTabOnPlan: true
