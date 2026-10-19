@@ -554,7 +554,7 @@ function registerTools(ctx, config) {
     defineTool({
       name: 'teams_approve',
       description:
-        '批准当前任务图，允许开始派发子代理。这是最后一道人工闸门：调用它代表用户已确认计划。未批准前 teams_run 会拒绝执行。',
+        '批准当前任务图，允许开始派发子代理。这是最后一道人工闸门：有审批通道时会弹出确认，用户同意才生效。未批准前 teams_run 会拒绝执行。',
       parameters: {},
       output: {
         schema: {
@@ -571,7 +571,49 @@ function registerTools(ctx, config) {
       },
       async execute(_args, exec) {
         const { captainSessionId, workspace } = captainOf(exec);
-        return approveTeam({ config, captainSessionId, workspace });
+
+        // 人工闸门：宿主有审批通道时就把决定权交给用户。
+        // 以前"批准"只是模型自己能调的一个普通工具——它可以在同一轮里
+        // plan → approve → run，用户压根没看到任务图（审计 P2-8）。
+        const approval = ctx.get('approval');
+        if (approval !== undefined && typeof approval.request === 'function') {
+          // 没有 agent 就没法把审批路由给某个人——宿主自己的 serviceAsk 也是这么判的
+          if (exec.agent === undefined) {
+            return { approved: false, reason: '这次调用没有可路由的会话，无法取得人工确认' };
+          }
+          let outcome;
+          try {
+            outcome = await approval.request({
+              agent: exec.agent,
+              toolName: 'teams_approve',
+              callId: exec.callId,
+              reason: '批准团队计划，随后会派发多个子代理执行该计划',
+              displayReason: '批准这份任务图并开始执行？',
+              signal: exec.signal,
+            });
+          } catch (error) {
+            return { approved: false, reason: `审批通道异常：${String(error?.message ?? error)}` };
+          }
+          if (outcome !== 'allowed-once') {
+            return {
+              approved: false,
+              reason: outcome === 'rejected' ? '用户拒绝了这份计划' : `审批未通过（${String(outcome)}）`,
+            };
+          }
+        }
+
+        const result = await approveTeam({ config, captainSessionId, workspace });
+        // 没有审批通道时如实记录"未经人工确认"，别让人以为已经批过了
+        if (approval === undefined && result.approved === true) {
+          const stateRoot = stateRootOf(workspace, readField(config?.stateDir, '.dsh-teams'));
+          await appendEvent({
+            stateRoot,
+            type: 'gate',
+            team: captainSessionId,
+            data: { action: 'approve-unconfirmed', note: '宿主未提供审批通道，本次批准未经人工确认' },
+          }).catch(() => {});
+        }
+        return result;
       },
     }),
   );

@@ -44,6 +44,7 @@ function fakeContext({ workspace }) {
       if (key === 'webServer' || key === 'httpServer') return ctx.__webServer;
       if (key === 'workspaceRegistry' || key === 'workspace') return ctx.__workspaceRegistry;
       if (key === 'connection') return { requestRejection: () => undefined };
+      if (key === 'approval') return ctx.__approval;
       return undefined;
     },
     on() {
@@ -64,6 +65,7 @@ function fakeContext({ workspace }) {
     __workspaceRegistry: {
       list: () => [{ path: workspace, title: 'test' }],
     },
+    __approval: undefined,
     __tools: tools,
     __sections: sections,
     __routes: routes,
@@ -515,5 +517,48 @@ test('工作区无 cwd 时退回进程工作目录，不抛错', async () => {
   await withWorkspace(async ({ ctx }) => {
     const result = await callTool(ctx, 'teams_route', { task: '调一下按钮颜色' }, { agent: { id: 's1', session: { header: {} } } });
     assert.equal(result.path, 'fast');
+  });
+});
+
+test('批准闸门：有审批通道时，用户拒绝则计划不被批准', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const { definitions } = { definitions: ctx.__tools };
+    const plan = definitions.get('teams_plan');
+    const approve = definitions.get('teams_approve');
+
+    // 工作区来自 agent.session.header.cwd，假 agent 必须带上，否则状态会落到进程 cwd
+    const exec = { agent: { id: 'cap', session: { header: { cwd: dir } } }, callId: 'call-1', signal: undefined };
+    await plan.execute({ task: '改个按钮颜色' }, exec);
+
+    // 用户拒绝
+    ctx.__approval = { request: async () => 'rejected' };
+    const rejected = await approve.execute({}, exec);
+    assert.equal(rejected.approved, false);
+    assert.match(rejected.reason, /拒绝/, '应说明是用户拒绝');
+
+    // 用户同意
+    ctx.__approval = { request: async () => 'allowed-once' };
+    const allowed = await approve.execute({}, exec);
+    assert.equal(allowed.approved, true, '同意后应批准');
+
+    // 没有审批通道：照常批准，但要留下"未经人工确认"的记录
+    ctx.__approval = undefined;
+    const plan2 = await plan.execute({ task: '换成另一件事', rebuild: true }, exec);
+    assert.ok(plan2);
+    const unconfirmed = await approve.execute({}, exec);
+    assert.equal(unconfirmed.approved, true);
+    const events = await readFile(join(dir, '.dsh-teams', 'events.jsonl'), 'utf8');
+    assert.match(events, /approve-unconfirmed/, '无通道时应记录未经人工确认');
+  });
+});
+
+test('批准闸门：没有会话上下文时直接拒绝（captainOf 先于审批通道）', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    ctx.__approval = { request: async () => 'allowed-once' };
+    const plan = ctx.__tools.get('teams_plan');
+    const approve = ctx.__tools.get('teams_approve');
+    const exec = { agent: { id: 'cap', session: { header: { cwd: dir } } }, callId: 'c1' };
+    await plan.execute({ task: '改个按钮颜色' }, exec);
+    await assert.rejects(() => approve.execute({}, { callId: 'c2' }), /无法确定队长会话/);
   });
 });

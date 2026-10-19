@@ -649,3 +649,37 @@ test('驳回时把评审意见带进任务卡（执行者不是盲改）', async
     assert.match(executorPrompts[1].text, /第42行有越权风险/, '应带上评审原始意见');
   });
 });
+
+/* ================================================================== *
+ * 风险关键词：英文屈折 + 中文口语词（审计 M7）
+ * ================================================================== */
+
+test('风险词：英文复数/时态/派生形式都能命中', () => {
+  for (const text of [
+    'rotate the credentials of the worker',
+    'store secrets in the vault',
+    'update user permissions',
+    'add encryption at rest',
+    'list vulnerabilities',
+    'authenticate the request',
+    'OAuth2 callback',
+    'payments are failing',
+  ]) {
+    const decision = route({ taskText: text, filesTouched: 1 });
+    assert.equal(decision.score.risk, 2, `应识别为高风险：${text}`);
+  }
+});
+
+test('风险词：不误报（author 不该被当成 auth）', () => {
+  for (const text of ['fix the author bio typos', '改个按钮颜色', 'update the docs', 'rename the build script']) {
+    const decision = route({ taskText: text, filesTouched: 1 });
+    assert.notEqual(decision.score.risk, 2, `不应误判为高风险：${text}`);
+  }
+});
+
+test('风险词：中文高频口语词也能命中', () => {
+  for (const text of ['退款流程改造', '令牌过期了', '会话固定攻击', '交易流水对账', '用户隐私导出']) {
+    const decision = route({ taskText: text, filesTouched: 1 });
+    assert.equal(decision.score.risk, 2, `应识别为高风险：${text}`);
+  }
+});
