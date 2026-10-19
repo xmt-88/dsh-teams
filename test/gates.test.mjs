@@ -550,3 +550,102 @@ test('重建：调度循环运行中拒绝重建任务图（否则新图会被�
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 });
+
+test('驳回后其它已通过的门会重跑（代码变了，旧结论过期）', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    let securityRounds = 0;
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label.split(':').slice(2).join(':'));
+                let text = '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS';
+                if (spec.label.includes('security-reviewer')) {
+                  securityRounds += 1;
+                  if (securityRounds <= 1) text = '越权 src/a.js:1 证据 src/a.js:1 退出码 0\n\nVERDICT: FAIL';
+                }
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const config = { ...CONFIG, gates: { requireEvidence: true, securityBlock: false } };
+    const base = { ctx, config, agent: { id: 'cap' }, captainSessionId: 'stale', workspace: dir };
+    await planTeam({ ...base, task: '重构认证模块，跨模块大改', filesTouched: 9, crossModule: true });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 300; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'stale');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done');
+    const reviewRuns = calls.filter((label) => label.includes('code-reviewer')).length;
+    assert.ok(reviewRuns >= 2, `重做后 review 必须重跑，实际 ${reviewRuns} 次`);
+    // 门必须在实现步骤之后重跑，不能与它并行
+    const lastExecutor = calls.lastIndexOf('executor');
+    const reviewAfter = calls.findIndex((label, index) => index > lastExecutor && label.includes('code-reviewer'));
+    assert.ok(reviewAfter > lastExecutor, 'review 应排在重做的执行者之后');
+  });
+});
+
+test('驳回时把评审意见带进任务卡（执行者不是盲改）', async () => {
+  await withDir(async (dir) => {
+    const prompts = [];
+    let rounds = 0;
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                // request.prompt 是内容块数组（[{type:'text',text}]），不是字符串
+                const blocks = Array.isArray(spec.request?.prompt) ? spec.request.prompt : [];
+                prompts.push({ label: spec.label, text: blocks.map((block) => String(block?.text ?? '')).join('\n') });
+                let text = '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS';
+                if (spec.label.includes('code-reviewer')) {
+                  rounds += 1;
+                  text =
+                    rounds === 1
+                      ? '第42行有越权风险。证据 src/a.js:42 退出码 0\n\nVERDICT: FAIL'
+                      : '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS';
+                }
+                return {
+                  childId: `c${prompts.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'fb', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'fb');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const executorPrompts = prompts.filter((item) => item.label.includes('t-executor:'));
+    assert.equal(executorPrompts.length, 2, '执行者应被退回一次');
+    assert.match(executorPrompts[1].text, /被质量门驳回过/, '第二次任务卡应说明这是重做');
+    assert.match(executorPrompts[1].text, /第42行有越权风险/, '应带上评审原始意见');
+  });
+});
