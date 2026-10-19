@@ -1575,6 +1575,7 @@ window.__ModuleLoader__.load({
         load();
       }, [load]);
 
+      // 返回 { ok, reason }：失败原因要能带回编辑器，而不是在界面上统一显示"保存失败"
       const act = async (body) => {
         setBusy(true);
         try {
@@ -1586,14 +1587,16 @@ window.__ModuleLoader__.load({
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || payload.ok !== true) {
-            setState((current) => ({ ...current, error: payload.reason ?? `HTTP ${response.status}` }));
-            return false;
+            const reason = payload.reason ?? (Array.isArray(payload.errors) ? payload.errors.join('；') : `HTTP ${response.status}`);
+            setState((current) => ({ ...current, error: reason }));
+            return { ok: false, reason };
           }
           setState({ status: 'ready', roles: payload.roles ?? [], coreRoles: payload.coreRoles ?? [], error: undefined });
-          return true;
+          return { ok: true };
         } catch (cause) {
-          setState((current) => ({ ...current, error: String(cause?.message ?? cause) }));
-          return false;
+          const reason = String(cause?.message ?? cause);
+          setState((current) => ({ ...current, error: reason }));
+          return { ok: false, reason };
         } finally {
           setBusy(false);
         }
@@ -1698,7 +1701,7 @@ window.__ModuleLoader__.load({
                             disabled: busy,
                             onClick: async () => {
                               const done = await act({ action: 'delete', role: role.slug });
-                              if (done) {
+                              if (done.ok) {
                                 setConfirming(undefined);
                                 setOpenSlug(undefined);
                               }
@@ -1974,7 +1977,7 @@ window.__ModuleLoader__.load({
                   onClick: async () => {
                     setBusy(true);
                     setError(undefined);
-                    const ok = await onSubmit({
+                    const result = await onSubmit({
                       action: 'save',
                       role_id: form.role_id,
                       name: form.name,
@@ -1989,8 +1992,8 @@ window.__ModuleLoader__.load({
                       output_budget: form.output_budget,
                     });
                     setBusy(false);
-                    if (ok) onSaved();
-                    else setError(t('role.saveFailed'));
+                    if (result.ok === true) onSaved();
+                    else setError(result.reason ?? t('role.saveFailed'));
                   },
                 },
                 busy ? t('set.saving') : t('role.save'),
