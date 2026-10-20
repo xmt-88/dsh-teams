@@ -72,14 +72,18 @@ export async function run() {
     await writeFile(file, body, 'utf8');
     const info = await stat(file);
 
+    // 现实现 vs 尾部基线。**判据必须是实测耗时比**：
+    // 以前用 `LINES/80` 当放大倍数，那是文件行数的常数，与实现是否全量读无关，
+    // 于是修好之后探针照样报 REPRODUCED（探针自身的假阳性）。
     const full = await timeIt(() => readEvents(dir, 80), 20);
     const tail = await timeIt(() => readTailBaseline(file, 80), 20);
-
+    const ratio = tail.medianMs === 0 ? 1 : full.medianMs / tail.medianMs;
     const amplification = LINES / 80;
     const bytesPerSnapshot = info.size;
     const activeBytesPerMinute = bytesPerSnapshot * 50;
     const idleBytesPerMinute = bytesPerSnapshot * 12;
-    const reproduced = amplification >= 10 && full.medianMs > tail.medianMs;
+    // 仍随历史线性放大 = 现实现慢于尾部基线 3 倍以上
+    const reproduced = ratio > 3;
 
     return {
       reproduced,
@@ -88,6 +92,7 @@ export async function run() {
         fileBytes: info.size,
         displayedTail: 80,
         readAmplification: `×${amplification.toFixed(1)}`,
+        currentVsTailBaseline: `${ratio.toFixed(2)}×`,
         readEvents: full,
         tail64kBaseline: tail,
         perSnapshotFullBytes: bytesPerSnapshot,

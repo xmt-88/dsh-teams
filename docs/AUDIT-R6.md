@@ -162,6 +162,40 @@
   3. `localAgent` 解析不到时看门狗不建，且墙钟默认关闭（AUDIT P2-9）；
   4. `readonly` 只是提示词约定，不是强制边界。
 
+## 修复状态（2026-10-20 收尾）
+
+16 条结论的处理结果：**修 14 / 不修 1（R6-16，非缺陷）/ 记入已知限制 1**。下面逐条对上提交。
+
+| ID | 状态 | 修法要点 | 验证 |
+|---|---|---|---|
+| R6-07 | ✅ 已修 | `hits()` 不再按 locale 过滤词池（语言只影响界面文案） | 回归测试：`en` 下中文安全任务仍 `full/risk2` |
+| R6-09 | ✅ 已修 | 图指纹改用 `plannedDeps`（计划期快照） | 回归测试：运行期补依赖指纹不变、计划期变更仍失效 |
+| R6-08 | ✅ 已修 | 启动前把遗留 `running` 复位为 `pending`（epoch+1） | 回归测试 + 探针 `probe-lost-on-crash` 转 NOT-REPRODUCED |
+| R6-02 | ✅ 已修 | schema + apply 视图 + 设置卡片三处补齐 | 探针 `probe-watch-keys` 转 NOT-REPRODUCED |
+| R6-15 | ✅ 已修 | full 路径 `security.deps` 改为 `executor` | `test/scheduler.test.mjs` 断言同步更新 |
+| R6-13 | ✅ 已修 | `readEvents` 改尾部倒读 | 12000 行取 80 条 10.68ms → 1ms；探针转 NOT-REPRODUCED |
+| R6-05 | ✅ 已修 | `runLoop` 带 `disabled` + `resolveRole` 回退只看可用角色 | 回归测试：批准后停用 `code-reviewer` 不再派发 |
+| R6-11 | ✅ 已修 | `purpose` 只在真正生成新图时更新 | 回归测试：被拒的 plan 不改旧图目标 |
+| R6-06 | ✅ 已修 | 独立心跳定时器（`LOOP_STALE_MS/12` 刷新，unref + 退出清理） | 静态（1 小时实等待不可行，探针口径一致） |
+| R6-10 | ✅ 已修 | 归档成为重建前置条件，失败即中止 | 静态 + 错误路径返回原因 |
+| R6-12 | ✅ 已修 | 启动期写盘失败时撤销占位并清定时器 | 静态 |
+| R6-01 | ✅ 已修 | `resolveUi` 彻底删除 `openTabOnPlan` | 探针 `probe-dead-config` 转 NOT-REPRODUCED |
+| R6-03 | ✅ 已修 | `ambiguous` 进决策记录与返回值，并在 notes 里提示 | 静态 + 返回字段 |
+| R6-04 | ✅ 已修 | `summarize.ready` 改为真实计算、删 `skipped`/`artifacts`/`stepId` | 静态 |
+| R6-16 | — 非缺陷 | 过度限制方向未发现误伤；`RUNS_PAGE` 有"更多"按钮 | 探针 `probe-limits` NOT-REPRODUCED |
+| R6-14 | 📌 已知限制 | `readRunRecords` 同样全量读；当前 2 条/3.6KB，量级未到 | 记录在案 |
+
+**修完后的完整证据**：
+
+```
+node --test "test/*.test.mjs"        → 235 passed
+node docs/audit-r6/run-all.mjs       → 5/5 跑完，5 项全部 NOT-REPRODUCED
+node docs/gate-probe-standalone.mjs  → 15 项通过
+```
+
+> 探针 `probe-events-growth` 自身的判据也修了：原来把 `LINES/80` 这个文件常量当"读取放大倍数"，
+> 与实现是否全量读无关，导致修好之后仍报 REPRODUCED。现改为实测「当前实现 / 尾部基线」耗时比 > 3 才算复现。
+
 ## 复现与证据
 
 ```bash

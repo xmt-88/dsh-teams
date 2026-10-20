@@ -20,6 +20,7 @@ import { validateCustomRole, loadRoles } from '../lib/roles.js';
 import { graphFingerprint, planTeam, approveTeam, startTeamRun } from '../lib/scheduler.js';
 import { readTeam, readTasks, userRolesDir, appendJsonl } from '../lib/state.js';
 import { readDisabledRoles, writeDisabledRoles, setRoleEnabled, validateToggle, CORE_ROLES } from '../lib/role-state.js';
+import { readEvents } from '../lib/state.js';
 import { buildRolesPayload, applyRoleAction } from '../lib/web-routes.js';
 
 /* ================================================================== *
@@ -1210,5 +1211,150 @@ test('重建归档：归档标题用上一轮图自己的 subject，不能被新
     assert.ok(lines.length >= 1, '应有归档记录');
     const archived = JSON.parse(lines[lines.length - 1]);
     assert.equal(archived.subject, '第一轮的任务', `归档标题必须是上一轮的任务，实际「${archived.subject}」`);
+  });
+});
+
+/* ================================================================== *
+ * 第六轮审计发现的回归锁（R6-*）
+ * ================================================================== */
+
+test('R6-07 locale 不得过滤关键词池（中文安全任务不能因界面语言漏判）', async () => {
+  const { route } = await import('../lib/router.js');
+  const task = '支付回调签名校验失败，需要改认证流程';
+  for (const locale of [undefined, 'zh', 'en']) {
+    const decision = route({ taskText: task, locale });
+    assert.equal(decision.path, 'full', `locale=${locale} 时中文安全任务必须走完整路径`);
+    assert.equal(decision.score.risk, 2, `locale=${locale} 时风险必须判 2`);
+  }
+});
+
+test('R6-09 运行期给门补依赖不得让审批指纹失效', () => {
+  const planned = {
+    tasks: [
+      { id: 'a', role: 'executor', kind: 'implementation', deps: [], plannedDeps: [], acceptance: [] },
+      { id: 'g', role: 'verifier', kind: 'verification', deps: ['a'], plannedDeps: ['a'], acceptance: [] },
+    ],
+  };
+  const afterRework = {
+    tasks: [
+      { id: 'a', role: 'executor', kind: 'implementation', deps: [], plannedDeps: [], acceptance: [] },
+      // 驳回时调度器给门补了依赖
+      { id: 'g', role: 'verifier', kind: 'verification', deps: ['a', 'b'], plannedDeps: ['a'], acceptance: [] },
+    ],
+  };
+  assert.equal(
+    graphFingerprint(planned),
+    graphFingerprint(afterRework),
+    '运行期补依赖不该改变审批指纹（否则 run/retry 全被挡住）',
+  );
+  // 但**计划期**依赖变化必须改变指纹
+  const replanned = {
+    tasks: [
+      { id: 'a', role: 'executor', kind: 'implementation', deps: [], plannedDeps: [], acceptance: [] },
+      { id: 'g', role: 'verifier', kind: 'verification', deps: ['a'], plannedDeps: ['a', 'x'], acceptance: [] },
+    ],
+  };
+  assert.notEqual(graphFingerprint(planned), graphFingerprint(replanned), '计划期改动必须让指纹失效');
+});
+
+test('R6-08 崩溃残留的 running 任务能自愈（不再永久卡死）', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'orph', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    // 模拟进程崩溃：第一个任务停在 running
+    const { mutateTasks } = await import('../lib/state.js');
+    await mutateTasks(join(dir, '.dsh-teams'), 'orph', (graph) => {
+      graph.tasks[0].status = 'running';
+      return graph;
+    });
+    const started = await startTeamRun(base);
+    assert.equal(started.started, true, started.reason ?? '');
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'orph');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '崩溃残留应自愈跑完，而不是零派发判 failed');
+  });
+});
+
+test('R6-05 plan 之后停用角色，run 阶段不得再派发它', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                return {
+                  childId: 'c',
+                  result: Promise.resolve({
+                    output: [{ type: 'text', text: '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS' }],
+                    stopReason: 'completed',
+                  }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'dis', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    // 批准之后停用 code-reviewer
+    const { setRoleEnabled } = await import('../lib/role-state.js');
+    await setRoleEnabled(join(dir, '.dsh-teams'), 'code-reviewer', false);
+
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'dis');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(
+      calls.some((label) => label.includes('code-reviewer')),
+      false,
+      `停用后的角色不得再被派发，实际派发：${calls.join(' → ')}`,
+    );
+  });
+});
+
+test('R6-11 被拒的第二次 plan 不得改写旧图的团队目标', async () => {
+  await withDir(async (dir) => {
+    const base = { ctx: { get: () => undefined, logger: { warn() {} } }, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'pur', workspace: dir };
+    await planTeam({ ...base, task: '实现登录页' });
+    const before = (await readTeam(join(dir, '.dsh-teams'), 'pur')).purpose;
+    const rejected = await planTeam({ ...base, task: '部署到生产环境' });
+    assert.equal(rejected.rebuilt, false, '已存在图时应拒绝');
+    const after = (await readTeam(join(dir, '.dsh-teams'), 'pur')).purpose;
+    assert.equal(after, before, `旧图目标被污染了：「${after}」`);
+  });
+});
+
+test('R6-13 事件流只读尾部（不随历史线性放大）', async () => {
+  await withDir(async (dir) => {
+    const { writeFile, mkdir } = await import('node:fs/promises');
+    const stateRoot = join(dir, '.dsh-teams');
+    await mkdir(join(stateRoot, 'teams'), { recursive: true });
+    const rows = [];
+    for (let i = 0; i < 12000; i += 1) rows.push(JSON.stringify({ ts: 'x', type: 'note', data: { i } }));
+    await writeFile(join(stateRoot, 'events.jsonl'), `${rows.join('\n')}\n`);
+
+    const started = Date.now();
+    const events = await readEvents(stateRoot, 80);
+    const elapsed = Date.now() - started;
+    assert.equal(events.length, 80, '应取到 80 条');
+    assert.equal(events[79].data.i, 11999, '最后一条必须是文件里最新的');
+    assert.equal(events[0].data.i, 11920, '顺序必须是正序的最近 80 条');
+    assert.ok(elapsed < 60, `尾部倒读应远快于全量读（实际 ${elapsed}ms）`);
   });
 });
