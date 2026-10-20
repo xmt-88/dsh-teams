@@ -81,6 +81,17 @@
 | R4-4（建议） | `hasEvidence` 把 `08:52` 当"文件:行号" | 冒号前必须是路径（含目录分隔符或扩展名） | 单元测试：`src/app.js:42` 通过，`08:52`/`1:2` 不算 |
 | R4-5（建议） | 只写不读字段：`staleVerdict`/`blockedBy`/`artifacts`/`stepId` | 前两个删除或改为事件，后两个本就不存在 | 扫描脚本确认清零 |
 
+## 第五轮（收尾验证）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| R5-1 | **停止链缺口**：abort 落在"子代理还没起来（`startChild` 抛 AbortError）"或"`result` 被 reject"这两个窗口时，返回里没有 `stopped` 标记 → 任务被判 `failed`，续跑语义断掉（此前只覆盖了 `result` resolve 成 `stopReason:'aborted'` 的情形） | `runner` 的 `finish()` **集中**标记 `stopped`，一次覆盖所有失败路径（不再逐个分支补） | 测试「abort 时 result 被 reject 也要留 pending」：停止后全 `pending` → 续跑 `done` |
+| R5-2 | **二次 settle 反写**：`done` 事件的 `appendEvent` 没有 `.catch`，写失败会抛给零进展护栏 → 再 settle 一次，把已 `done` 的任务翻成 `failed` | `settleTask` 幂等（已 `done` 的任务不接受迟到的失败）；`done` 事件补 `.catch` | 测试「done 幂等」 |
+
+**第五轮其余验证全部成立**：零进展护栏（7 条事件、1 条"派发期异常"、phase=failed）、数据损坏不被掩盖、
+`stopped` 只有两个来源（stopRun / 僵尸接管，都先置 cancelled）、blocked 有 `by` 事件、
+workspace 精确匹配（正确 200 / 错误 400）、无 TDZ 与无界循环残留。
+
 ## 已知限制（记录在案，非缺陷）
 
 1. **3 个内置角色未被任何路径派发**（`document-specialist` / `explore` / `orchestrator`）。
