@@ -71,6 +71,16 @@
 
 ---
 
+## 第四轮（验证第三轮修复 + 收尾）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| R4-1（P1） | **派发期异常没有兜底**：`dispatchOne` 抛错时任务恒 `pending`，下一轮又被挑中 → 事件流无界增长（实测 6 秒 3438 条）、phase 永停 running | `runLoop` 的 batch 加 `.catch` → `settleTask(failed)`；`settleTask` 对缺 `attempts`/`evidence` 的畸形记录做补齐（它自己一抛，兜底也失效） | 测试「零进展护栏」；实测缺 `attempts` 时 53ms 收口 |
+| R4-2（P1） | **停止后不能续跑**：aborted 结果被判 `failed`，而 `halted` 只重置 `running` → 再 `teams_run` 零派发 | `runTask` 在用户停止时返回 `stopped:true`，调度器据此把任务留 `pending`（attempt 记 `stopped`） | 测试「停止后续跑（真实 abort 路径）」：`halted` → 全 `pending` → 续跑到 `done` |
+| R4-3（建议） | `workspace` 用前缀匹配，传父目录会落到子工作区 | 改为**精确匹配**（剥掉 stateDir 后缀后比较） | 测试「未知 workspace 400」「正确 workspace 200」 |
+| R4-4（建议） | `hasEvidence` 把 `08:52` 当"文件:行号" | 冒号前必须是路径（含目录分隔符或扩展名） | 单元测试：`src/app.js:42` 通过，`08:52`/`1:2` 不算 |
+| R4-5（建议） | 只写不读字段：`staleVerdict`/`blockedBy`/`artifacts`/`stepId` | 前两个删除或改为事件，后两个本就不存在 | 扫描脚本确认清零 |
+
 ## 已知限制（记录在案，非缺陷）
 
 1. **3 个内置角色未被任何路径派发**（`document-specialist` / `explore` / `orchestrator`）。
