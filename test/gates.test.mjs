@@ -820,3 +820,117 @@ test('停止后可续跑：halted → 再次 teams_run 从断点继续，不要�
     );
   });
 });
+
+test('判定解析：合法写法不能被误杀（尾随括号/破折号/项目符号/整段围栏/判定后多行）', () => {
+  assert.equal(parseVerdict('证据 a.js:1 退出码 0\n\nVERDICT: PASS'), 'PASS');
+  assert.equal(parseVerdict('VERDICT: PASS（无阻塞项）'), 'PASS', '尾随括号说明是合法的');
+  assert.equal(parseVerdict('VERDICT: PASS — 无阻塞项'), 'PASS', '尾随破折号说明是合法的');
+  assert.equal(parseVerdict('- VERDICT: FAIL'), 'FAIL', '项目符号是合法的');
+  assert.equal(parseVerdict('**VERDICT:** FAIL'), 'FAIL');
+  assert.equal(parseVerdict('VERDICT： BLOCKED'), 'BLOCKED', '全角冒号');
+  assert.equal(parseVerdict('```\nVERDICT: FAIL（三个问题）\n```'), 'FAIL', '整段被围栏包住也认');
+  assert.equal(parseVerdict('VERDICT: PASS\n- 补充一\n- 二\n- 三\n- 四\n- 五\n- 六'), 'PASS', '判定后还有几行说明');
+});
+
+test('判定解析：回显格式/自相矛盾一律不认（fail-closed）', () => {
+  assert.equal(parseVerdict('请按此输出\nVERDICT: PASS|FAIL|BLOCKED'), undefined, '回显格式不是判定');
+  assert.equal(parseVerdict('VERDICT: FAIL\nVERDICT: PASS'), undefined, '两个不同判定 = 歧义');
+  assert.equal(parseVerdict('都过了'), undefined, '没写判定');
+});
+
+test('丢弃过期结果时事件流留痕', async () => {
+  await withDir(async (dir) => {
+    // 正常流程起跑，但让子代理慢一点；派发后再给它加一代（模拟驳回/停止/接管）
+    let release;
+    const hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async () => ({
+                childId: 'c1',
+                result: hold.then(() => ({
+                  output: [{ type: 'text', text: '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS' }],
+                  stopReason: 'completed',
+                })),
+                dispose: async () => {},
+              }),
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'dc', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // 加一代：派发时捕获的是 0，现在变成 1 → 结果回来必须被丢弃
+    const { mutateTasks } = await import('../lib/state.js');
+    await mutateTasks(join(dir, '.dsh-teams'), 'dc', (graph) => {
+      for (const task of graph.tasks) {
+        if (task.status !== 'running') continue;
+        task.epoch = (task.epoch ?? 0) + 1;
+      }
+      return graph;
+    });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const events = await readFile(join(dir, '.dsh-teams', 'events.jsonl'), 'utf8');
+    assert.match(events, /丢弃了 .* 的过期结果/, '丢弃必须写事件');
+  });
+});
+
+
+test('停止：真正打断在跑的子代理（不是等它自己跑完）', async () => {
+  await withDir(async (dir) => {
+    let aborted = false;
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => ({
+                childId: 'c1',
+                // 永不主动返回，只有收到 abort 才结束
+                result: new Promise((resolve) => {
+                  spec.signal?.addEventListener('abort', () => {
+                    aborted = true;
+                    resolve({ output: [], stopReason: 'aborted' });
+                  });
+                }),
+                dispose: async () => {},
+              }),
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'ab', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const started = Date.now();
+    assert.equal(stopRun(stateRootOf(dir, CONFIG.stateDir), 'ab'), true);
+    let team;
+    for (let i = 0; i < 100; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'ab');
+      if (team?.phase === 'halted') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'halted', '应落到 halted');
+    assert.equal(aborted, true, '子代理必须收到 abort，而不是等它自己结束');
+    assert.ok(Date.now() - started < 3000, '停止应在一两秒内完成');
+  });
+});
