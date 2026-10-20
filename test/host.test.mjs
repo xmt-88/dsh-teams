@@ -898,5 +898,13 @@ test('运行中拒绝 teams_plan 时，decision 必须描述正在跑的那张�
     );
 
     await callTool(ctx, 'teams_stop', {}, exec);
+    // 停止是异步的：循环还在写盘时删除工作区会撞 ENOTEMPTY（测试污染，不是产品问题）
+    const { stateRootOf } = await import('../lib/state.js');
+    const { isRunning } = await import('../lib/scheduler.js');
+    const stateRoot = stateRootOf(dir, '.dsh-teams');
+    for (let i = 0; i < 200; i += 1) {
+      if (!isRunning(stateRoot, exec.agent.id)) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   });
 });
