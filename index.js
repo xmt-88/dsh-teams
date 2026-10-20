@@ -204,6 +204,9 @@ function registerTools(ctx, config) {
             role_chain: { type: 'array', required: true, items: { type: 'string' } },
             needs_ui_design: { type: 'boolean', required: true },
             escalated: { type: 'boolean', required: true },
+            // 任务描述过短时评分不可靠（审计 R6-03）：字段必须在这里声明，
+            // 否则 output schema 会以 additionalProperties:false 拒掉整个工具结果。
+            ambiguous: { type: 'boolean' },
             notes: { type: 'array', required: true, items: { type: 'string' } },
           },
         },
@@ -577,6 +580,8 @@ function registerTools(ctx, config) {
             approved: { type: 'boolean', required: true },
             reason: { type: 'string' },
             phase: { type: 'string' },
+            // 批准成功时 approveTeam 会回指纹；没声明就会被 additionalProperties:false 拒掉
+            graph: { type: 'string' },
           },
         },
         render: (_args, value) =>

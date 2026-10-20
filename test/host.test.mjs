@@ -15,6 +15,8 @@ import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
+
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
@@ -83,7 +85,17 @@ function fakeExec(workspace, sessionId = 'session-test-1') {
 async function callTool(ctx, name, args, exec) {
   const definition = ctx.__tools.get(name);
   assert.ok(definition, `工具 ${name} 应已注册`);
-  return definition.execute(args, exec);
+  const value = await definition.execute(args, exec);
+  // ⚠️ 返回值必须满足工具自己声明的 output schema。宿主是在调用期做这件事的：
+  // 多返回一个未声明的字段，整个工具结果会被 additionalProperties:false 拒掉，
+  // 模型只看到一句 "invalid output"（真实踩过：给 teams_route 加了 ambiguous 却忘了声明）。
+  const violations = validateJsonSchemaValue(definition.output.schema, value);
+  assert.deepEqual(
+    violations,
+    [],
+    `工具 ${name} 的返回值不符合自己的 output schema：${violations.map((item) => item.message ?? String(item)).join('；')}`,
+  );
+  return value;
 }
 
 /** 每个用例一个临时工作区，避免互相污染。 */
@@ -764,5 +776,38 @@ test('审批策略=ask 且用户拒绝时不批准', async () => {
     const result = await callTool(ctx, 'teams_approve', {}, exec);
     assert.equal(result.approved, false);
     assert.match(result.reason, /拒绝/);
+  });
+});
+
+test('全部 10 个工具的返回值都满足各自声明的 output schema', async () => {
+  // 宿主在调用期用 additionalProperties:false 校验工具输出，多一个未声明字段
+  // 整个结果就会被拒（模型只看到 "invalid output"）。这条用例把每个工具
+  // 都实际调用一遍，再让 callTool 用真 schema 校验。
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+
+    // 1) route / plan
+    await callTool(ctx, 'teams_route', { task: '调整按钮颜色和间距' }, exec);
+    await callTool(ctx, 'teams_plan', { task: '调整按钮颜色和间距', force_path: 'fast' }, exec);
+    // 2) status
+    await callTool(ctx, 'teams_status', {}, exec);
+    // 3) approve（有审批通道时会问，这里让它放行）
+    ctx.__approval = { effectivePolicy: () => 'never', request: async () => 'allowed-once' };
+    await callTool(ctx, 'teams_approve', {}, exec);
+    // 4) run 之后立刻 stop（不等待子代理）
+    ctx.__approval = undefined;
+    await callTool(ctx, 'teams_run', {}, exec);
+    await callTool(ctx, 'teams_stop', {}, exec);
+    // 5) retry / 角色三件套
+    await callTool(ctx, 'teams_retry', {}, exec);
+    await callTool(ctx, 'teams_roles', {}, exec);
+    const saved = await callTool(
+      ctx,
+      'teams_role_save',
+      { role_id: 'schema-probe', name: 'Schema 探针', description: '用于校验输出契约', prompt: '正文' },
+      exec,
+    );
+    assert.equal(saved.saved, true);
+    await callTool(ctx, 'teams_role_manage', { action: 'disable', role: 'schema-probe' }, exec);
   });
 });
