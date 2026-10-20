@@ -1,0 +1,15 @@
+A 缺 subagents 服务                             started=true phase=failed → 期望：明确报错，不留 running
+B 未批准直接 run                                  started=false reason=计划尚未批准。请先确认任务图，再调用 teams_approve
+D phase=done 且无 approvedAt                   started=false → 期望：false（闸门应看 approvedAt）
+E rebuild 后                                  started=false reason=计划尚未批准。请先确认任务图，再调用 teams_approve
+F 批准后追加任务                                    started=false 派发= → 期望：拒绝或至少重批
+G requireEvidence=开  phase=failed → 期望：开=failed（无证据不算通过），关=done
+G requireEvidence=关  phase=done → 期望：开=failed（无证据不算通过），关=done
+H verifier 报 FAIL                            phase=failed 状态=t-executor:done,t-review:failed,t-verify:blocked → 期望：failed
+J ✓ 支付回调签名校验失败                             path=full      期望=full
+J ✓ 用户 token 过期后一直 401                     path=full      期望=full
+J ✓ rotate the credentials of the worker   path=full      期望=full
+J ✓ store secrets in the vault             path=full      期望=full
+J ✓ update user permissions                path=full      期望=full
+J ✓ 退款流程改造                                 path=full      期望=full
+I ✓ 支付+force_path=fast → path=full（期望 full）

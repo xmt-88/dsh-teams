@@ -1,0 +1,41 @@
+findings.json 校验通过：16 条 finding，六维覆盖齐全
+
+=== probe-watch-keys (hardcoded) ===
+{
+  "reproduced": true,
+  "observed": {
+    "configParseKeepsKeys": {
+      "stallFloorMs": 120,
+      "stallFactor": 2
+    },
+    "parsedView": {
+      "probeMs": 20,
+      "stallFloorMs": 120
+    },
+    "applyView": {
+      "statusAfter900ms": "running",
+      "childStarted": 1,
+      "killedWithin900ms": false
+    },
+    "rawConfigControl": {
+      "settled": true,
+      "status": "failed",
+      "failure": "子代理 0 秒没有任何进展（会话游标不前进），判定为卡死（已取消，取消方式：agent.cancel）（未重试：重试次数已用尽）",
+      "childStarted": 1,
+      "killedWithin900ms": true
+    }
+  }
+}
+
+=== 汇总 ===
+probe-watch-keys         hardcoded          REPRODUCED
+
+六维覆盖：
+  dead-path          R6-01, R6-03, R6-04, R6-05
+  hardcoded          R6-02, R6-06, R6-07
+  interrupted        R6-09, R6-12, R6-15
+  task-loss          R6-08, R6-10, R6-11
+  over-consumption   R6-13, R6-14
+  over-restriction   R6-16
+
+OK：1/1 个探针跑完；reproduced 只作为结果数据，不影响退出码。

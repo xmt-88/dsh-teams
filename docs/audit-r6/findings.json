@@ -1,0 +1,709 @@
+{
+  "schemaVersion": 1,
+  "round": 6,
+  "head": "33b0e92",
+  "generatedAt": "2026-10-20T10:30:00.000Z",
+  "dimensions": [
+    {
+      "key": "dead-path",
+      "label": "① 断点（走不通 / 永不触发）"
+    },
+    {
+      "key": "hardcoded",
+      "label": "② 应变量却被写死"
+    },
+    {
+      "key": "interrupted",
+      "label": "③ 可能中断的流程"
+    },
+    {
+      "key": "task-loss",
+      "label": "④ 任务可能丢失"
+    },
+    {
+      "key": "over-consumption",
+      "label": "⑤ 过度消耗"
+    },
+    {
+      "key": "over-restriction",
+      "label": "⑥ 过度限制"
+    }
+  ],
+  "findings": [
+    {
+      "id": "R6-01",
+      "dim": "dead-path",
+      "severity": "low",
+      "title": "ui.openTabOnPlan 声称已删除，但仍由 resolveUi 返回，且无任何消费者",
+      "evidence": {
+        "kind": "probe",
+        "loc": [
+          {
+            "file": "lib/config.js",
+            "line": 94,
+            "excerpt": "openTabOnPlan: readField(ui?.openTabOnPlan, true) === true,"
+          },
+          {
+            "file": "index.js",
+            "line": 1120,
+            "excerpt": "ui: { get locale() { ... } }  // apply 期只暴露 locale"
+          },
+          {
+            "file": "client.js",
+            "line": 2881,
+            "excerpt": "sidebarRight.openTab(TAB_KIND, {})  // 由用户点击触发，不读配置"
+          }
+        ],
+        "command": "node docs/audit-r6/probe-dead-config.mjs",
+        "observed": "resolveUi({ui:{openTabOnPlan:false}}).openTabOnPlan=false，true 时为 true；除 lib/config.js:94 外，index.js / client.js / lib 中 0 个消费者；index.js schema 出现 0 次。",
+        "expected": "既然客户端无法实现自动开标签，应从 schema、apply 视图、lib/config.js 三处一并删除；只删前两处会留下一个永远返回默认值、无人消费的活配置。"
+      },
+      "impact": "设置页不再显示该字段，但代码里保留了一个“看起来可配”的开关，误导后续维护者；无运行时副作用。",
+      "decision": "fix",
+      "priority": "P3",
+      "relation": "incomplete-fix",
+      "fixSketch": "删除 lib/config.js:94 的 openTabOnPlan 返回项；同步 dead-config-scan.mjs 的键表。"
+    },
+    {
+      "id": "R6-02",
+      "dim": "hardcoded",
+      "severity": "high",
+      "title": "看门狗唯二判死参数 stallFloorMs/stallFactor 被 apply 期配置视图截断，配置永远不生效",
+      "evidence": {
+        "kind": "probe",
+        "loc": [
+          {
+            "file": "index.js",
+            "line": 95,
+            "excerpt": "watch: z.object({ probeMs, idleGraceMs, silenceLimitMs })  // schema 只声明 3 键"
+          },
+          {
+            "file": "index.js",
+            "line": 1101,
+            "excerpt": "watch: { get probeMs, get idleGraceMs, get silenceLimitMs }  // apply 视图只暴露 3 键"
+          },
+          {
+            "file": "lib/config.js",
+            "line": 53,
+            "excerpt": "for (const key of ['probeMs','idleGraceMs','silenceLimitMs','stallFloorMs','stallFactor'])"
+          },
+          {
+            "file": "lib/runner.js",
+            "line": 144,
+            "excerpt": "stallFloorMs: 900_000, stallFactor: 4  // 硬编码兜底"
+          },
+          {
+            "file": "lib/runner.js",
+            "line": 669,
+            "excerpt": "const stallWindow = Math.max(limits.stallFloorMs, (watch.maxGapMs ?? 0) * limits.stallFactor);"
+          }
+        ],
+        "command": "node docs/audit-r6/probe-watch-keys.mjs",
+        "observed": "Config.parse 保留 stallFloorMs=120 / stallFactor=2（不是 schema 丢键）；经插件 apply 后，120ms 停滞下限在 900ms 内没有判死（executor 仍 running）；同一份 raw config 直接交给 scheduler 的对照组 ~120ms 判死（failed，stalled）。",
+        "expected": "apply 期视图应把 stallFloorMs/stallFactor 一并暴露；配置 120ms 时看门狗与 raw config 对照组行为一致。"
+      },
+      "impact": "默认关墙钟后，动态停滞判定是唯一判死路径；其下限被钉死 15 分钟且无法调高/调低。合法的长模型调用（>15min 无会话事件）无法通过配置放宽，只能改代码；小任务也无法收紧以便快速失败。",
+      "decision": "fix",
+      "priority": "P1",
+      "relation": "incomplete-fix",
+      "fixSketch": "index.js schema 与 apply 视图补 stallFloorMs/stallFactor getter；client.js 设置卡片 watch 组补两个字段；AUDIT-2026-10-20.md 5.1 已记录半死状态，本轮确认仍未修。"
+    },
+    {
+      "id": "R6-03",
+      "dim": "dead-path",
+      "severity": "low",
+      "title": "route().ambiguous 只计算不消费，唯一读者是测试",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/router.js",
+            "line": 508,
+            "excerpt": "const ambiguous = text.trim().length > 0 && text.trim().length < 12 && !forced && scoreFinal.risk < 2;"
+          },
+          {
+            "file": "lib/router.js",
+            "line": 520,
+            "excerpt": "ambiguous,  // 返回给调用方"
+          },
+          {
+            "file": "test/router.test.mjs",
+            "line": 276,
+            "excerpt": "test('极短任务被标记为 ambiguous，长任务不会', ...)"
+          }
+        ],
+        "command": "grep -rn \"ambiguous\" --include=*.js --include=*.mjs lib index.js client.js test",
+        "observed": "lib/router.js 定义/返回；test/router.test.mjs 断言；index.js、client.js、lib/scheduler.js 均无读取。teams_route 输出 schema 也没有该字段。",
+        "expected": "要么把 ambiguous 暴露到 teams_route 输出/UI（提示“任务描述过短，建议补充”），要么删除计算；只计算不消费是死值。"
+      },
+      "impact": "短任务被静默按保守中位数路由（scale=1），用户与队长都看不到“描述太短”的提示；无功能损害。",
+      "decision": "fix",
+      "priority": "P3",
+      "relation": "new",
+      "fixSketch": "在 teams_route 输出 schema 增加 ambiguous，并在 render 里提示；或在 route() 删除该字段与测试。"
+    },
+    {
+      "id": "R6-04",
+      "dim": "dead-path",
+      "severity": "low",
+      "title": "stats.ready 恒为 0、skipped 状态无写入者、artifacts/stepId 只写不读",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/tasks.js",
+            "line": 245,
+            "excerpt": "const stats = { total, pending: 0, ready: 0, running: 0, blocked: 0, done: 0, failed: 0, skipped: 0 };"
+          },
+          {
+            "file": "lib/tasks.js",
+            "line": 229,
+            "excerpt": "if (task.status !== 'pending') continue;  // 没有把 ready 写回任务状态"
+          },
+          {
+            "file": "lib/tasks.js",
+            "line": 62,
+            "excerpt": "artifacts: [],  // 全仓无写入"
+          },
+          {
+            "file": "lib/tasks.js",
+            "line": 46,
+            "excerpt": "stepId: step.id,  // 仅构建，无读取"
+          }
+        ],
+        "command": "grep -rn \"stats.ready\\|skipped\\|artifacts\\|stepId\" --include=*.js lib index.js client.js",
+        "observed": "skipped 出现在 depsSatisfied/collectDependencyOutputs/cmd 标记与 UI 文案里，但没有任何写入者；summarize 从不把 ready 加一；artifacts 只在 buildTaskGraph 初始化为 []；stepId 构建后无读者。",
+        "expected": "删除恒 0 的 ready / 永不产生的 skipped / 只写字段，或补上真实写入者；面板不要为不存在状态保留分支。"
+      },
+      "impact": "纯维护负担，会让读者误以为存在 skipped 生命周期；无行为影响。AUDIT 5.2 已记录，R4-5 声称已清但实际仍在。",
+      "decision": "wontfix",
+      "priority": "P3",
+      "relation": "incomplete-fix",
+      "fixSketch": "低优先清理：保留 skipped 以兼容历史状态文件，其余删除；若保留 ready 应在 pickReady 后写回。"
+    },
+    {
+      "id": "R6-05",
+      "dim": "dead-path",
+      "severity": "medium",
+      "title": "角色停用只在 plan 阶段生效：runLoop 重新加载角色不带 disabled，resolveRole 模糊回退还会返回停用角色",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 504,
+            "excerpt": "const library = await loadRoles(userRolesDir(stateRoot));  // runLoop 未传 disabled"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 134,
+            "excerpt": "const library = await loadRoles(userRolesDir(stateRoot), { disabled: disabledRoles });  // 只有 plan 传"
+          },
+          {
+            "file": "lib/roles.js",
+            "line": 243,
+            "excerpt": "const folded = library.roles.filter(...);  // roles 含 disabled，bySlug 才是可用集"
+          }
+        ],
+        "command": "node --input-type=module -e \"import {loadRoles,resolveRole} from './lib/roles.js'; ...\"",
+        "observed": "loadRoles(...,{disabled:new Set(['code-reviewer'])}) 后 bySlug.has('code-reviewer')=false，但 resolveRole(lib,'code-reviewer') 仍返回该角色（enabled=false）。",
+        "expected": "停用后不应被任何派发路径解析；resolveRole 的 exact/folded 回退应只在可用集（bySlug）内查找，runLoop 也应传入当前 disabled 集合或在派发前拒绝停用角色。"
+      },
+      "impact": "用户在 plan 之后、run 之前停用某角色，旧图仍会派发该角色；停用控制对已批准图无效，与 teams_role_manage 描述“停用后不会被流水线派发”不一致。",
+      "decision": "fix",
+      "priority": "P2",
+      "relation": "new",
+      "fixSketch": "resolveRole 的 exact/folded 改为遍历 bySlug.values()；runLoop 用 readDisabledRoles 后 loadRoles(...,{disabled})，并在 dispatchOne 对 enabled=false 结算为明确失败。"
+    },
+    {
+      "id": "R6-06",
+      "dim": "hardcoded",
+      "severity": "medium",
+      "title": "僵尸循环的 1 小时窗口只看批次间心跳；单批跑超 1 小时会被第二次 teams_run 误接管并作废在飞结果",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 47,
+            "excerpt": "const LOOP_STALE_MS = 60 * 60 * 1000;"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 306,
+            "excerpt": "const stale = Date.now() - (existing.touchedAt ?? 0) > LOOP_STALE_MS;"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 512,
+            "excerpt": "handle.touchedAt = Date.now();  // 只在每轮循环顶部刷新，await batch 期间不刷新"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 593,
+            "excerpt": "const settled = await Promise.allSettled(batch);"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 408,
+            "excerpt": "if (activeLoops.has(key)) return { started: false, reason: '调度循环仍在运行中，等它收口再续跑' };"
+          }
+        ],
+        "command": "grep -n \"LOOP_STALE_MS\\|touchedAt\\|Promise.allSettled(batch)\" lib/scheduler.js",
+        "observed": "touchedAt 只在 for(;;) 顶部刷新；一批任务在 await Promise.allSettled(batch) 里可连续跑 maxRetries+1 次。按 FIXES 记录 heavy=45min、executor 实测 30min，3 次尝试可达 135min > 60min。此时第二次 teams_run 会走 stale 分支：epoch+1、running→pending、换新循环，旧结果随后被丢弃。retryFailedTeam 反而不做 stale 判断，僵尸锁存在时永远拒绝续跑。",
+        "expected": "心跳应覆盖派发期（每次 attempt 开始/结束、或独立定时器）；retry 也应复用同一套 stale 接管逻辑，而不是与 run 行为不一致。"
+      },
+      "impact": "长任务（>1h 的批次）可能被一次重复 teams_run 打断并丢弃数十分钟工作；僵尸锁时 teams_retry 永久不可用（只能先 teams_run 触发接管）。",
+      "decision": "fix",
+      "priority": "P1",
+      "relation": "new",
+      "fixSketch": "dispatchOne 每次 attempt 开始/结束时更新 handle.touchedAt（需把 handle 传下去）；或 stale 判定取 max(handle.touchedAt, 最近 task.updatedAt)；retryFailedTeam 复用接管分支。"
+    },
+    {
+      "id": "R6-07",
+      "dim": "hardcoded",
+      "severity": "high",
+      "title": "ui.locale=en 会把路由关键词池缩成纯英文，中文安全任务漏判风险直接落到 fast",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 143,
+            "excerpt": "locale: resolveUi(config).locale === 'en' ? 'en' : undefined,"
+          },
+          {
+            "file": "lib/router.js",
+            "line": 211,
+            "excerpt": "const list = locale === 'en' ? KEYWORDS[table].en : KEYWORDS[table].zh;"
+          },
+          {
+            "file": "lib/router.js",
+            "line": 213,
+            "excerpt": "const pool = locale === undefined ? both : list;"
+          },
+          {
+            "file": "lib/router.js",
+            "line": 447,
+            "excerpt": "if (riskShortCircuit && scoreFinal.risk === 2) { ... path = PATHS.FULL; }"
+          }
+        ],
+        "command": "node --input-type=module -e \"import {route} from './lib/router.js'; console.log(route({taskText:'支付回调签名校验失败',locale:'en'}).path)\"",
+        "observed": "同一句任务：locale 缺省 → risk=2、total=3、path=full；locale='en' → risk=0、total=1、path=fast。英文任务 'update user permissions' 在 en/缺省下都是 full。",
+        "expected": "界面语言（ui.locale）只应影响文案；路由的关键词匹配应始终同时检查中英文词表，或按任务文本语言而不是 UI 语言选择词表。"
+      },
+      "impact": "英文界面的用户用中文描述认证/支付/权限改动时，风险短路失效，任务被降到快速路径（只有实现+审查+验证），安全审查步骤消失。这是安全语义的静默降级。",
+      "decision": "fix",
+      "priority": "P1",
+      "relation": "new",
+      "fixSketch": "route() 不再接收 locale 作为词表开关，hits() 始终使用 both；若确需语言区分，应检测任务文本语言，而不是复用 UI locale。"
+    },
+    {
+      "id": "R6-08",
+      "dim": "task-loss",
+      "severity": "high",
+      "title": "进程重启后遗留的 running 任务永久卡死：teams_run 零派发判 failed，teams_retry 不认 running",
+      "evidence": {
+        "kind": "probe",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 306,
+            "excerpt": "const stale = Date.now() - (existing.touchedAt ?? 0) > LOOP_STALE_MS;  // 需要 activeLoops 里先有句柄"
+          },
+          {
+            "file": "lib/tasks.js",
+            "line": 229,
+            "excerpt": "if (task.status !== 'pending') continue;  // running 永远不会被重新挑中"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 637,
+            "excerpt": "const residual = stats.running > 0 || stats.pending > 0;"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 413,
+            "excerpt": "const hasRetryable = ... status === 'failed' || status === 'blocked';"
+          }
+        ],
+        "command": "node docs/audit-r6/probe-lost-on-crash.mjs",
+        "observed": "内置 fast 图，把 t-executor 置 running 模拟崩溃后重启：startTeamRun 返回 started=true，随后 phase=failed，任务状态 t-executor:running / t-review:pending / t-verify:pending；teams_retry 返回 started=false“没有失败或受阻的任务可续跑”。teams_stop 因 activeLoops 为空返回 stopped=false。",
+        "expected": "重启后的第一次 startTeamRun 应把遗留 running 任务 epoch+1 并改回 pending（与 halted 路径同语义），或标 failed 让 teams_retry 接住；不能永久停在 running。"
+      },
+      "impact": "崩溃/断电/宿主重启会丢在飞任务且无法续跑；用户只能 teams_plan(rebuild=true) 重建，之前的部分产出与任务图一起被归档，必须从头再来。",
+      "decision": "fix",
+      "priority": "P1",
+      "relation": "new",
+      "fixSketch": "在 startTeamRun 的“无 activeLoop”分支里增加一次恢复：把所有 running 任务 epoch+1、status=pending、updatedAt 刷新，并写一条 note 事件；或 finalizeRun 时把 running 标 failed（可被 retry 接住）。"
+    },
+    {
+      "id": "R6-09",
+      "dim": "interrupted",
+      "severity": "high",
+      "title": "质量门驳回会改写 task.deps，导致已批准图指纹失效：之后 teams_retry 能重置任务却启动不了调度",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 294,
+            "excerpt": "if (team.approvedGraph !== fingerprint) { return { started: false, reason: '任务图在批准之后被改动过…' } }"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 1000,
+            "excerpt": "task.deps = [...new Set([...(task.deps ?? []), ...reopened])];  // 驳回时内部改写依赖"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 423,
+            "excerpt": "task.status = 'pending';  // retry 先把 failed/blocked 改回 pending"
+          },
+          {
+            "file": "index.js",
+            "line": 727,
+            "excerpt": "const retry = await retryFailedTeam(...); ... const started = await startTeamRun(...);"
+          }
+        ],
+        "command": "node --input-type=module -e \"... planTeam(full) → approveTeam → mutateTasks 给 t-security.deps 加 t-executor → startTeamRun → 标 t-test failed → retryFailedTeam → startTeamRun ...\"",
+        "observed": "内部加依赖后：startTeamRun started=false“任务图在批准之后被改动过（或来自上一轮），需要重新批准”（approvedGraph=a411e5c352064919，currentGraph=750afd769b36a923）。再把 t-test 标 failed：retryFailedTeam started=true retried=1；随后 startTeamRun 仍以同一指纹原因拒绝，t-test 已变成 pending，retry 也再也挑不中它。",
+        "expected": "内部调度器对 deps 的改写不应要求用户重新批准；应在改写后刷新 approvedGraph，或指纹只覆盖用户可改字段。"
+      },
+      "impact": "任何发生过质量门驳回（review FAIL → 重做）的运行，只要最后还有任务失败/被停止，teams_retry 就会把任务重置为 pending 后启动失败，形成“retry 说已续跑、实际没跑”的死状态，只能重新 teams_approve + teams_run。",
+      "decision": "fix",
+      "priority": "P1",
+      "relation": "new",
+      "fixSketch": "settleTask 的 mutateTasks 释放锁后，重算 graphFingerprint 并写 team.approvedGraph（不要在锁内调用 mutateTeam，会重入同一把 state 锁）；或把 rework 依赖放进不进指纹的 runtimeDeps。retry 启动失败时应把已重置的 pending 回滚为原状态或自动重新批准。"
+    },
+    {
+      "id": "R6-10",
+      "dim": "task-loss",
+      "severity": "medium",
+      "title": "重建前归档失败被静默吞掉，随后旧任务图立即被覆盖，运行历史永久丢失",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 160,
+            "excerpt": "await archiveRun(stateRoot, captainSessionId, existing).catch(() => {});  // 失败静默"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 184,
+            "excerpt": "await mutateTasks(stateRoot, captainSessionId, () => graph);  // 旧图被整个替换"
+          }
+        ],
+        "command": "grep -n \"archiveRun\\|mutateTasks(stateRoot, captainSessionId, () => graph)\" lib/scheduler.js",
+        "observed": "archiveRun 的 appendRunRecord 写失败（磁盘满、权限、目录被占）会被 catch 成 no-op；planTeam 不检查结果，继续用新图覆盖 tasks/<session>.json，runs.jsonl 没有这一轮记录。",
+        "expected": "归档是重建的前置条件：归档失败应中止 rebuild 并返回明确原因，而不是丢掉历史后继续。"
+      },
+      "impact": "面板“每次任务”历史少一轮，且没有任何错误提示；旧任务图与产出不可恢复（只能从 git/备份找）。",
+      "decision": "fix",
+      "priority": "P2",
+      "relation": "new",
+      "fixSketch": "去掉 .catch(()=>{})，把 archiveRun 失败变成 planTeam 的失败返回（或写一条 error 事件并拒绝 rebuild）。"
+    },
+    {
+      "id": "R6-11",
+      "dim": "task-loss",
+      "severity": "medium",
+      "title": "planTeam 在“已有任务图”检查之前就改写 team.purpose，被拒绝的第二次 plan 会把旧图的团队目标换掉",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 130,
+            "excerpt": "await ensureTeam({ stateRoot, captainSessionId, workspace, purpose: task });  // 先写 purpose"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 162,
+            "excerpt": "if (existing.tasks.length > 0 && rebuild !== true) { ... return { rebuilt:false, ... graph: existing } }"
+          },
+          {
+            "file": "lib/state.js",
+            "line": 213,
+            "excerpt": "existing.purpose = purpose;  // 无条件覆盖"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 726,
+            "excerpt": "const teamGoal = team?.purpose ?? '';  // 派发时用它做团队总目标"
+          }
+        ],
+        "command": "node --input-type=module -e \"... planTeam('实现登录页') → planTeam('部署到生产环境', rebuild=false) ...\"",
+        "observed": "第二次调用返回 rebuilt=false / “已存在任务图…”，但 team.purpose 已从“实现登录页”变成“部署到生产环境”，任务图仍是旧图；之后 dispatchOne 给每个成员注入的 teamGoal 是新任务。",
+        "expected": "已有图且未 rebuild 时应原样返回，不得修改任何团队记录；purpose 应跟随任务图（graph/decision），而不是先写后判。"
+      },
+      "impact": "队长在旧计划上误调一次 teams_plan 后，再运行旧图会把“部署到生产环境”当成团队总目标注入所有角色，产出偏离原任务；面板标题也会串。",
+      "decision": "fix",
+      "priority": "P2",
+      "relation": "new",
+      "fixSketch": "把 ensureTeam 移到 existing 检查之后；或在 ensureTeam 增加 updatePurpose=false 选项，planTeam 只在真正生成/重建图时更新 purpose。"
+    },
+    {
+      "id": "R6-12",
+      "dim": "interrupted",
+      "severity": "low",
+      "title": "startTeamRun 先占 activeLoops 再 await mutateTeam；写失败会泄漏锁且不启动循环",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/scheduler.js",
+            "line": 346,
+            "excerpt": "activeLoops.set(key, handle);"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 351,
+            "excerpt": "await mutateTeam(stateRoot, captainSessionId, (current) => { ... current.phase = 'running'; ... });"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 357,
+            "excerpt": "runLoop({ ... })  // 在 await 之后才启动"
+          }
+        ],
+        "command": "grep -n \"activeLoops.set(key, handle)\\|await mutateTeam\\|runLoop({\" lib/scheduler.js",
+        "observed": "activeLoops.set 是同步的；随后的 mutateTeam 若抛错（磁盘/权限），startTeamRun 直接 reject，既没有 runLoop，也没有 .finally 删锁。之后 1 小时内所有 teams_run 都返回“调度循环已在运行中”。",
+        "expected": "占位后到 runLoop 启动之间应保证清理：try/catch 里 activeLoops.delete(key) 并返回 started=false；或先写 team 再占位（但会破坏并发保护，需事务化）。"
+      },
+      "impact": "低概率 I/O 错误会把该会话锁死 1 小时（之后靠 stale 接管），期间无法启动/续跑；无数据丢失。",
+      "decision": "fix",
+      "priority": "P3",
+      "relation": "new",
+      "fixSketch": "把 mutateTeam 包在 try/catch；失败时 activeLoops.delete(key) 并返回 {started:false, reason}。"
+    },
+    {
+      "id": "R6-13",
+      "dim": "over-consumption",
+      "severity": "medium",
+      "title": "/state 快照只需要 80 条事件，却每次全量读取并解析整个 events.jsonl；轮询把成本放大 12~50 倍/分钟",
+      "evidence": {
+        "kind": "probe",
+        "loc": [
+          {
+            "file": "lib/state.js",
+            "line": 317,
+            "excerpt": "const raw = await readFile(eventsFile(stateRoot), 'utf8');"
+          },
+          {
+            "file": "lib/state.js",
+            "line": 318,
+            "excerpt": "const lines = raw.split('\\n').filter(...)"
+          },
+          {
+            "file": "lib/state.js",
+            "line": 319,
+            "excerpt": "const tail = lines.slice(-Math.max(1, limit));"
+          },
+          {
+            "file": "lib/web-routes.js",
+            "line": 169,
+            "excerpt": "const events = await readEvents(stateRoot, EVENT_TAIL);"
+          },
+          {
+            "file": "client.js",
+            "line": 25,
+            "excerpt": "const POLL_ACTIVE_MS = 1200; const POLL_IDLE_MS = 5000;"
+          }
+        ],
+        "command": "node docs/audit-r6/probe-events-growth.mjs",
+        "observed": "12000 行 / 2,910,320 字节的事件文件：readEvents(80) 中位 10.68ms，按 limit 只读尾部 64KB 的对照 0.32ms（~33 倍）；单次快照读满 2.91MB（放大 ×150）。按客户端 1.2s/5s 轮询：运行中 50 次/分钟 → 145.5 MB/分钟；空闲 12 次/分钟 → 34.9 MB/分钟。真实状态目录当前 146 行 / 33KB，成本随历史线性增长。",
+        "expected": "按 limit 只读文件尾部（如固定 64KB 窗口）或维护环形日志；单次读取字节数应与 limit 相关，而不是与历史事件总量线性相关。"
+      },
+      "impact": "长会话/多次运行后，面板每次刷新都做 O(全历史) 磁盘读 + JSON.parse；事件流只增不减，成本无上限，且会拖慢 Web 路由响应。",
+      "decision": "fix",
+      "priority": "P2",
+      "relation": "new",
+      "fixSketch": "readEvents 改为从文件尾按块倒读直到凑满 limit 行；appendEvent 侧按大小轮转（events.jsonl.1）；或增加事件索引。"
+    },
+    {
+      "id": "R6-14",
+      "dim": "over-consumption",
+      "severity": "low",
+      "title": "readRunRecords 每次快照全量读 runs.jsonl；归档历史只增不减，面板只默认展示 8 条",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/state.js",
+            "line": 371,
+            "excerpt": "const text = await readFile(file, 'utf8');"
+          },
+          {
+            "file": "lib/state.js",
+            "line": 372,
+            "excerpt": "for (const line of text.split('\\n')) { ... }  // 全量解析"
+          },
+          {
+            "file": "lib/web-routes.js",
+            "line": 185,
+            "excerpt": "const archived = await readRunRecords(stateRoot, captainSessionId);"
+          },
+          {
+            "file": "client.js",
+            "line": 1416,
+            "excerpt": "const RUNS_PAGE = 8;"
+          }
+        ],
+        "command": "grep -n \"readRunRecords\\|runsFile\\|RUNS_PAGE\" lib/state.js lib/web-routes.js client.js",
+        "observed": "每次 /state 都读完整 runs.jsonl 并逐行 JSON.parse；runs 每条含每步的 steps 数组，文件随重建次数线性增长。客户端只默认渲染 8 条（有“更多”按钮），宿主侧仍全量下发。",
+        "expected": "快照只回最近 N 轮（如 12 轮）+ 总数，更早的历史按需分页；或对 runs 文件做尾读。"
+      },
+      "impact": "与 R6-13 同源的 O(历史) 快照成本；当前 2 条记录、3.6KB，尚小，但会随任务轮次增长。",
+      "decision": "fix",
+      "priority": "P3",
+      "relation": "new",
+      "fixSketch": "与 R6-13 一并做尾读；buildSnapshot 增加 runsLimit（默认 12）并统计 total，客户端分页请求。"
+    },
+    {
+      "id": "R6-15",
+      "dim": "interrupted",
+      "severity": "medium",
+      "title": "full/debug-secure 的安全审查只依赖 architect，首轮在实现之前/并行运行，PASS 不覆盖本次变更",
+      "evidence": {
+        "kind": "static",
+        "loc": [
+          {
+            "file": "lib/router.js",
+            "line": 78,
+            "excerpt": "{ id: 'security', role: 'security-reviewer', deps: ['architect'], kind: 'review' }"
+          },
+          {
+            "file": "lib/router.js",
+            "line": 82,
+            "excerpt": "{ id: 'verify', ... deps: ['simplify','review','security','test'] }"
+          },
+          {
+            "file": "lib/scheduler.js",
+            "line": 997,
+            "excerpt": "// full 路径里 security 只依赖 architect——不修这条，门会与重做的执行者并行开跑"
+          },
+          {
+            "file": "test/scheduler.test.mjs",
+            "line": 233,
+            "excerpt": "assert.deepEqual(security.deps, ['t-architect']);  // 现状被测试固定"
+          }
+        ],
+        "command": "grep -n \"id: 'security'\" lib/router.js; sed -n '228,238p' test/scheduler.test.mjs",
+        "observed": "security 与 critic 同为 architect 的下游，会在 executor 之前或同批启动；它没有 t-executor 依赖，collectDependencyOutputs 拿不到实现产出。只有发生驳回、settleTask 给门补 deps 之后，security 才会依赖 executor。",
+        "expected": "安全门应审查本次变更：security.deps 至少包含 t-executor；若为了并行而保留 architect 依赖，也应把 executor 加进去（或在 verify 前强制重跑一次 security）。"
+      },
+      "impact": "首轮 security PASS 基于变更前代码；verifier 把它当成安全门已通过，真实变更可能带着漏洞被判绿。这是质量门的错序，不是性能优化能抵消的。",
+      "decision": "fix",
+      "priority": "P2",
+      "relation": "new",
+      "fixSketch": "PATH_TEMPLATES.full / debug-secure 的 security.deps 改为 ['executor']（与 simplify/review/test 并行，增加约一个安全门时长）；同步更新 test/scheduler.test.mjs:233 的断言——本轮不改 test/，留给下一轮。"
+    },
+    {
+      "id": "R6-16",
+      "dim": "over-restriction",
+      "severity": "low",
+      "title": "上限清单复核：RUNS_PAGE/依赖截断/256KB 均非误伤，VERDICT 8 行是刻意的 fail-closed",
+      "evidence": {
+        "kind": "probe",
+        "loc": [
+          {
+            "file": "client.js",
+            "line": 1416,
+            "excerpt": "const RUNS_PAGE = 8;  // 默认展开 8 条"
+          },
+          {
+            "file": "client.js",
+            "line": 1423,
+            "excerpt": "const shown = showAll ? runs : runs.slice(0, RUNS_PAGE);  // 有 showAll"
+          },
+          {
+            "file": "lib/tasks.js",
+            "line": 13,
+            "excerpt": "export const DEP_OUTPUT_LIMIT = 2000; DEP_TOTAL_LIMIT = 12000;"
+          },
+          {
+            "file": "lib/web-routes.js",
+            "line": 668,
+            "excerpt": "if (size > 256 * 1024) { resolve(undefined); req.destroy(); }"
+          },
+          {
+            "file": "lib/verdict.js",
+            "line": 22,
+            "excerpt": "export const VERDICT_TAIL_LINES = 8;"
+          }
+        ],
+        "command": "node docs/audit-r6/probe-limits.mjs",
+        "observed": "RUNS_PAGE 只是默认折叠：client.js 有 showAll 与“更多”按钮（hidden>0），不删除数据；依赖截断在合成 7 依赖时触发省略（12200 字符），但内置路径 verify 最多 4 个依赖 = 8000 < 12000，不会触发；256KB 对角色契约余量充足且会 req.destroy()；VERDICT 只扫最后 8 行，契约要求判定写在最后一行。四条均未发现合法输入被误杀。",
+        "expected": "上限要么有展开/兜底路径，要么与合法输入保持数量级余量；否则才算误伤。"
+      },
+      "impact": "无。此条是反证：架构方案里“RUNS_PAGE=8 是实际拒绝态”的假设不成立。",
+      "decision": "known-limit",
+      "priority": "P3",
+      "relation": "known-limit",
+      "fixSketch": "维持现状；若未来允许自定义图有 >6 个依赖，再评估 DEP_TOTAL_LIMIT 的省略策略（当前不会触发）。"
+    }
+  ],
+  "coverage": [
+    {
+      "dim": "dead-path",
+      "findingIds": [
+        "R6-01",
+        "R6-03",
+        "R6-04",
+        "R6-05"
+      ],
+      "evidenceKind": "mixed"
+    },
+    {
+      "dim": "hardcoded",
+      "findingIds": [
+        "R6-02",
+        "R6-06",
+        "R6-07"
+      ],
+      "evidenceKind": "mixed"
+    },
+    {
+      "dim": "interrupted",
+      "findingIds": [
+        "R6-09",
+        "R6-12",
+        "R6-15"
+      ],
+      "evidenceKind": "static"
+    },
+    {
+      "dim": "task-loss",
+      "findingIds": [
+        "R6-08",
+        "R6-10",
+        "R6-11"
+      ],
+      "evidenceKind": "mixed"
+    },
+    {
+      "dim": "over-consumption",
+      "findingIds": [
+        "R6-13",
+        "R6-14"
+      ],
+      "evidenceKind": "mixed"
+    },
+    {
+      "dim": "over-restriction",
+      "findingIds": [
+        "R6-16"
+      ],
+      "evidenceKind": "probe"
+    }
+  ],
+  "probes": [
+    "probe-watch-keys",
+    "probe-events-growth",
+    "probe-dead-config",
+    "probe-lost-on-crash",
+    "probe-limits"
+  ]
+}

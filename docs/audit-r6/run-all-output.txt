@@ -1,0 +1,153 @@
+findings.json 校验通过：16 条 finding，六维覆盖齐全
+
+=== probe-watch-keys (hardcoded) ===
+{
+  "reproduced": true,
+  "observed": {
+    "configParseKeepsKeys": {
+      "stallFloorMs": 120,
+      "stallFactor": 2
+    },
+    "parsedView": {
+      "probeMs": 20,
+      "stallFloorMs": 120
+    },
+    "applyView": {
+      "statusAfter900ms": "running",
+      "childStarted": 1,
+      "killedWithin900ms": false
+    },
+    "rawConfigControl": {
+      "settled": true,
+      "status": "failed",
+      "failure": "子代理 0 秒没有任何进展（会话游标不前进），判定为卡死（已取消，取消方式：agent.cancel）（未重试：重试次数已用尽）",
+      "childStarted": 1,
+      "killedWithin900ms": true
+    }
+  }
+}
+
+=== probe-events-growth (over-consumption) ===
+{
+  "reproduced": true,
+  "observed": {
+    "eventsInFile": 12000,
+    "fileBytes": 2910320,
+    "displayedTail": 80,
+    "readAmplification": "×150.0",
+    "readEvents": {
+      "medianMs": 11.12,
+      "totalMs": 229.99
+    },
+    "tail64kBaseline": {
+      "medianMs": 0.49,
+      "totalMs": 11.64
+    },
+    "perSnapshotFullBytes": 2910320,
+    "runtimePollingPerMinute": {
+      "active": {
+        "requests": 50,
+        "bytesRead": 145516000,
+        "human": "145.5 MB/min"
+      },
+      "idle": {
+        "requests": 12,
+        "bytesRead": 34923840,
+        "human": "34.9 MB/min"
+      }
+    }
+  }
+}
+
+=== probe-dead-config (dead-path) ===
+{
+  "reproduced": true,
+  "observed": {
+    "resolveUiStillReturns": {
+      "whenFalse": false,
+      "whenTrue": true
+    },
+    "configSchemaMentions": 0,
+    "allSourceHits": [
+      {
+        "file": "lib\\config.js",
+        "line": 94,
+        "text": "openTabOnPlan: readField(ui?.openTabOnPlan, true) === true,"
+      }
+    ],
+    "consumersOutsideConfigJs": [],
+    "clientMentions": 0
+  }
+}
+
+=== probe-lost-on-crash (task-loss) ===
+{
+  "reproduced": true,
+  "observed": {
+    "startReturned": {
+      "started": true,
+      "tasks": 3,
+      "pending": 2
+    },
+    "phaseAfterRun": "failed",
+    "taskStatuses": [
+      "t-executor:running",
+      "t-review:pending",
+      "t-verify:pending"
+    ],
+    "lingeringRunning": "running",
+    "retry": {
+      "started": false,
+      "reason": "没有失败或受阻的任务可续跑"
+    },
+    "stopAvailable": false
+  }
+}
+
+=== probe-limits (over-restriction) ===
+{
+  "reproduced": false,
+  "observed": {
+    "runsPage": {
+      "constant": 8,
+      "hasShowAll": true,
+      "hasMoreButton": true,
+      "rejectsRuns": false,
+      "note": "折叠的是\"默认展开数量\"，不是数据删除；点击更多会渲染全部。"
+    },
+    "dependencyTruncation": {
+      "depOutputLimit": 2000,
+      "depTotalLimit": 12000,
+      "mergedLength": 12162,
+      "omitted": true,
+      "lastDependencyKept": false,
+      "builtinVerifyWorstCase": 8000,
+      "builtinPathsHitCap": false,
+      "note": "截断是提示词预算保护；内置路径 verify 最多 4 个依赖，8000 < 12000，不会触发。"
+    },
+    "requestBodyLimit": {
+      "kilobytes": 256,
+      "destroysOnOverflow": true,
+      "note": "256KB 对角色契约（常见 < 20KB）有充足余量；这是鉴权路由上的防滥用边界。"
+    },
+    "verdictTailLines": 8,
+    "verdictTailNote": "只扫最后 8 行是刻意的 fail-closed；角色契约明确要求 VERDICT 写在最后一行。"
+  }
+}
+
+=== 汇总 ===
+probe-watch-keys         hardcoded          REPRODUCED
+probe-events-growth      over-consumption   REPRODUCED
+probe-dead-config        dead-path          REPRODUCED
+probe-lost-on-crash      task-loss          REPRODUCED
+probe-limits             over-restriction   NOT-REPRODUCED
+
+六维覆盖：
+  dead-path          R6-01, R6-03, R6-04, R6-05
+  hardcoded          R6-02, R6-06, R6-07
+  interrupted        R6-09, R6-12, R6-15
+  task-loss          R6-08, R6-10, R6-11
+  over-consumption   R6-13, R6-14
+  over-restriction   R6-16
+
+OK：5/5 个探针跑完；reproduced 只作为结果数据，不影响退出码。
