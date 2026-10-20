@@ -576,41 +576,64 @@ function registerTools(ctx, config) {
         // 以前"批准"只是模型自己能调的一个普通工具——它可以在同一轮里
         // plan → approve → run，用户压根没看到任务图（审计 P2-8）。
         const approval = ctx.get('approval');
-        if (approval !== undefined && typeof approval.request === 'function') {
+        const hasSeam = approval !== undefined && typeof approval.request === 'function';
+        let unconfirmed;
+
+        if (hasSeam) {
           // 没有 agent 就没法把审批路由给某个人——宿主自己的 serviceAsk 也是这么判的
           if (exec.agent === undefined) {
             return { approved: false, reason: '这次调用没有可路由的会话，无法取得人工确认' };
           }
-          let outcome;
+
+          // ⚠️ 先读策略：`never` 表示用户选择"不要问我"，此时宿主**不会弹窗**，
+          // 而是直接返回 'rejected'（dsh-user-approval 的 decide() 就是这么写的）。
+          // 把它当成"用户拒绝"是误判——那会让"关掉审批弹窗"的人永远批不了计划。
+          let policy;
           try {
-            outcome = await approval.request({
-              agent: exec.agent,
-              toolName: 'teams_approve',
-              callId: exec.callId,
-              reason: '批准团队计划，随后会派发多个子代理执行该计划',
-              displayReason: '批准这份任务图并开始执行？',
-              signal: exec.signal,
-            });
-          } catch (error) {
-            return { approved: false, reason: `审批通道异常：${String(error?.message ?? error)}` };
+            policy =
+              typeof approval.effectivePolicy === 'function'
+                ? approval.effectivePolicy(exec.agent.session)
+                : undefined;
+          } catch {
+            policy = undefined;
           }
-          if (outcome !== 'allowed-once') {
-            return {
-              approved: false,
-              reason: outcome === 'rejected' ? '用户拒绝了这份计划' : `审批未通过（${String(outcome)}）`,
-            };
+
+          if (policy === 'never') {
+            unconfirmed = '会话审批策略为 never（用户选择不弹窗），本次批准未经弹窗确认';
+          } else {
+            let outcome;
+            try {
+              outcome = await approval.request({
+                agent: exec.agent,
+                toolName: 'teams_approve',
+                callId: exec.callId,
+                reason: '批准团队计划，随后会派发多个子代理执行该计划',
+                displayReason: '批准这份任务图并开始执行？',
+                signal: exec.signal,
+              });
+            } catch (error) {
+              return { approved: false, reason: `审批通道异常：${String(error?.message ?? error)}` };
+            }
+            if (outcome !== 'allowed-once') {
+              return {
+                approved: false,
+                reason: outcome === 'rejected' ? '用户拒绝了这份计划' : `审批未通过（${String(outcome)}）`,
+              };
+            }
           }
+        } else {
+          unconfirmed = '宿主未提供审批通道，本次批准未经人工确认';
         }
 
         const result = await approveTeam({ config, captainSessionId, workspace });
-        // 没有审批通道时如实记录"未经人工确认"，别让人以为已经批过了
-        if (approval === undefined && result.approved === true) {
+        // 未经弹窗确认时如实留痕，别让人以为已经批过了
+        if (unconfirmed !== undefined && result.approved === true) {
           const stateRoot = stateRootOf(workspace, readField(config?.stateDir, '.dsh-teams'));
           await appendEvent({
             stateRoot,
             type: 'gate',
             team: captainSessionId,
-            data: { action: 'approve-unconfirmed', note: '宿主未提供审批通道，本次批准未经人工确认' },
+            data: { action: 'approve-unconfirmed', note: unconfirmed },
           }).catch(() => {});
         }
         return result;

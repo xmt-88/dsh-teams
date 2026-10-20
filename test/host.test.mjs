@@ -730,3 +730,39 @@ test('HTTP：带正确 workspace 时读写落在同一工作区', async () => {
     assert.equal(out.body.roles.length, 16);
   });
 });
+
+test('审批策略=never 时不弹窗、按「未确认」放行并留痕（不能误判成用户拒绝）', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    // 宿主在 policy=never 时不会去问任何人，request() 直接返回 'rejected'
+    // （dsh-user-approval 的 decide() 就是这么实现的）。把它当成"用户拒绝"是误判：
+    // 关掉审批弹窗的人将永远批不了计划。
+    let asked = 0;
+    ctx.__approval = {
+      effectivePolicy: () => 'never',
+      request: async () => {
+        asked += 1;
+        return 'rejected';
+      },
+    };
+    const exec = fakeExec(dir);
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+    const result = await callTool(ctx, 'teams_approve', {}, exec);
+
+    assert.equal(result.approved, true, `policy=never 应放行，实际：${JSON.stringify(result)}`);
+    assert.equal(asked, 0, 'policy=never 时根本不应该去问（问了宿主也只会回 rejected）');
+    const events = await readFile(join(dir, '.dsh-teams', 'events.jsonl'), 'utf8');
+    assert.match(events, /approve-unconfirmed/, '必须留下"未经弹窗确认"的痕迹');
+    assert.match(events, /never/, '原因要写清楚是策略 never');
+  });
+});
+
+test('审批策略=ask 且用户拒绝时不批准', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    ctx.__approval = { effectivePolicy: () => 'ask', request: async () => 'rejected' };
+    const exec = fakeExec(dir);
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+    const result = await callTool(ctx, 'teams_approve', {}, exec);
+    assert.equal(result.approved, false);
+    assert.match(result.reason, /拒绝/);
+  });
+});
