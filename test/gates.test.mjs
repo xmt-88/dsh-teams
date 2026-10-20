@@ -18,7 +18,7 @@ import { parseVerdict, isGateKind, hasEvidence, GATE_KINDS } from '../lib/verdic
 import { route, adaptSteps, buildSteps, PATH_TEMPLATES } from '../lib/router.js';
 import { validateCustomRole, loadRoles } from '../lib/roles.js';
 import { graphFingerprint, planTeam, approveTeam, startTeamRun } from '../lib/scheduler.js';
-import { readTeam, readTasks, userRolesDir, appendJsonl } from '../lib/state.js';
+import { readTeam, readTasks, mutateTasks, userRolesDir, appendJsonl } from '../lib/state.js';
 import { readDisabledRoles, writeDisabledRoles, setRoleEnabled, validateToggle, CORE_ROLES } from '../lib/role-state.js';
 import { readEvents } from '../lib/state.js';
 import { buildRolesPayload, applyRoleAction } from '../lib/web-routes.js';
@@ -1257,6 +1257,26 @@ test('R6-09 运行期给门补依赖不得让审批指纹失效', () => {
   assert.notEqual(graphFingerprint(planned), graphFingerprint(replanned), '计划期改动必须让指纹失效');
 });
 
+test('复核 #2：任务图 subject 必须读得回来，运行期改图不得把它覆盖成空串', async () => {
+  await withDir(async (dir) => {
+    const stateRoot = join(dir, '.dsh-teams');
+    const fake = fakeSubagents(() => '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'subj', workspace: dir };
+    await planTeam({ ...base, task: '第一轮的任务' });
+
+    const planned = await readTasks(stateRoot, 'subj');
+    assert.equal(planned.subject, '第一轮的任务', 'readTasks 必须把随图落盘的 subject 读回来');
+
+    // 调度循环每次状态变更都会经 mutateTasks 读-改-写；读不到 subject 就会在这里被清空
+    await mutateTasks(stateRoot, 'subj', (graph) => {
+      graph.tasks[0].status = 'running';
+      return graph;
+    });
+    const after = await readTasks(stateRoot, 'subj');
+    assert.equal(after.subject, '第一轮的任务', '运行期改图后 subject 仍必须保留');
+  });
+});
+
 test('R6-08 崩溃残留的 running 任务能自愈（不再永久卡死）', async () => {
   await withDir(async (dir) => {
     const fake = fakeSubagents(() => '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS');
@@ -1356,5 +1376,27 @@ test('R6-13 事件流只读尾部（不随历史线性放大）', async () => {
     assert.equal(events[79].data.i, 11999, '最后一条必须是文件里最新的');
     assert.equal(events[0].data.i, 11920, '顺序必须是正序的最近 80 条');
     assert.ok(elapsed < 60, `尾部倒读应远快于全量读（实际 ${elapsed}ms）`);
+  });
+});
+
+test('复核 LOW：事件被 64KB 分块边界切断多字节字符时不得产生替换符', async () => {
+  await withDir(async (dir) => {
+    const { writeFile } = await import('node:fs/promises');
+    const stateRoot = join(dir, '.dsh-teams');
+    await mkdir(join(stateRoot, 'teams'), { recursive: true });
+    // 两条事件：第一条里的「中」正好横跨尾部倒读的 64KB 分块边界
+    // （分块边界在 size-65536，「中」的起始字节在 size-65537）。
+    // 旧实现按块各自 toString('utf8')，会把「中」切成两个 U+FFFD。
+    const prefix = '{"ts":"x","type":"note","data":{"pad":"';
+    const suffix = '"}}';
+    const event1 = `${prefix}${'a'.repeat(100)}中${suffix}`;
+    const pad2 = 'b'.repeat(65537 - 11 - prefix.length);
+    const event2 = `${prefix}${pad2}${suffix}`;
+    await writeFile(join(stateRoot, 'events.jsonl'), `${event1}\n${event2}\n`);
+
+    const events = await readEvents(stateRoot, 5);
+    assert.equal(events.length, 2, '两条事件都应解析出来');
+    assert.equal(events[0].data.pad.endsWith('中'), true, '多字节字符必须完整保留');
+    assert.equal(JSON.stringify(events).includes('\uFFFD'), false, '不得出现 U+FFFD 替换符');
   });
 });

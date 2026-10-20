@@ -188,7 +188,7 @@
 **修完后的完整证据**：
 
 ```
-node --test "test/*.test.mjs"        → 235 passed
+node --test "test/*.test.mjs"        → 242 passed
 node docs/audit-r6/run-all.mjs       → 5/5 跑完，5 项全部 NOT-REPRODUCED
 node docs/gate-probe-standalone.mjs  → 15 项通过
 ```

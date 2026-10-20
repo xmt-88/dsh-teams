@@ -20,6 +20,8 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
+import { readTasks, stateRootOf } from '../lib/state.js';
+import { isRunning } from '../lib/scheduler.js';
 
 /** 造一个最小的假 cordis 上下文：只提供插件实际使用的成员。 */
 function fakeContext({ workspace }) {
@@ -47,6 +49,7 @@ function fakeContext({ workspace }) {
       if (key === 'workspaceRegistry' || key === 'workspace') return ctx.__workspaceRegistry;
       if (key === 'connection') return { requestRejection: () => undefined };
       if (key === 'approval') return ctx.__approval;
+      if (key === 'subagents') return ctx.__subagents;
       return undefined;
     },
     on() {
@@ -68,6 +71,7 @@ function fakeContext({ workspace }) {
       list: () => [{ path: workspace, title: 'test' }],
     },
     __approval: undefined,
+    __subagents: undefined,
     __tools: tools,
     __sections: sections,
     __routes: routes,
@@ -809,5 +813,90 @@ test('全部 10 个工具的返回值都满足各自声明的 output schema', as
     );
     assert.equal(saved.saved, true);
     await callTool(ctx, 'teams_role_manage', { action: 'disable', role: 'schema-probe' }, exec);
+  });
+});
+
+test('运行中的拒绝分支：重复 teams_run / teams_plan 都满足 output schema 且不伤在飞任务', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    const stateRoot = stateRootOf(dir, '.dsh-teams');
+    // 永不返回结果的子代理：让调度循环稳定停在“有任务在飞”的状态
+    ctx.__subagents = {
+      getProvider: () => ({
+        name: 'spawn',
+        capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true },
+      }),
+      list: () => ['spawn'],
+      startActivation: async (spec) => ({
+        childId: 'hold',
+        // 一直不交结果，直到被 abort（模拟真实宿主：stop 会打断子代理）
+        result: new Promise((resolve) => {
+          const finish = () => resolve({ output: [], stopReason: 'aborted' });
+          if (spec.signal?.aborted === true) finish();
+          else spec.signal?.addEventListener('abort', finish, { once: true });
+        }),
+        dispose: async () => {},
+      }),
+    };
+
+    await callTool(ctx, 'teams_plan', { task: '改个按钮颜色' }, exec);
+    await callTool(ctx, 'teams_approve', {}, exec);
+    const started = await callTool(ctx, 'teams_run', {}, exec);
+    assert.equal(started.started, true);
+
+    // 等某个任务真正进入 running（派发是异步的）
+    let before;
+    for (let i = 0; i < 200; i += 1) {
+      before = (await readTasks(stateRoot, 'session-test-1')).tasks.find((task) => task.status === 'running');
+      if (before !== undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(before !== undefined, '应能观察到在飞任务');
+
+    // 重复 teams_run：callTool 会用真 schema 校验（拒绝分支含 running 字段）
+    const second = await callTool(ctx, 'teams_run', {}, exec);
+    assert.equal(second.started, false);
+    const after = (await readTasks(stateRoot, 'session-test-1')).tasks.find((task) => task.id === before.id);
+    assert.equal(after.status, 'running', '重复调用不得复位在飞任务');
+    assert.equal(after.epoch ?? 0, before.epoch ?? 0, '重复调用不得给在飞任务加世代');
+
+    // 运行中 teams_plan：必须干净拒绝，不能因为 result.decision/graph 缺失抛 TypeError
+    const plan = await callTool(ctx, 'teams_plan', { task: '运行中重建' }, exec);
+    assert.equal(plan.rebuilt, false);
+    assert.match(plan.reason, /运行/);
+
+    const stopped = await callTool(ctx, 'teams_stop', {}, exec);
+    assert.equal(stopped.stopped, true);
+    for (let i = 0; i < 200 && isRunning(stateRoot, 'session-test-1'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(isRunning(stateRoot, 'session-test-1'), false, '停止后循环必须退出');
+  });
+});
+
+test('运行中拒绝 teams_plan 时，decision 必须描述正在跑的那张图（不能新旧混搭）', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    // 先用 fast 建图并开跑
+    await callTool(ctx, 'teams_plan', { task: '调整按钮颜色和间距', force_path: 'fast' }, exec);
+    ctx.__approval = { effectivePolicy: () => 'never', request: async () => 'allowed-once' };
+    await callTool(ctx, 'teams_approve', {}, exec);
+    await callTool(ctx, 'teams_run', {}, exec);
+
+    // 运行中用一条安全任务去 plan：应被拒，且回的是**旧图**的路径标签
+    const rejected = await callTool(
+      ctx,
+      'teams_plan',
+      { task: '支付回调签名校验失败，需要改认证流程', rebuild: true },
+      exec,
+    );
+    assert.equal(rejected.rebuilt, false, '运行中必须拒绝重建');
+    assert.equal(rejected.path, 'fast', `拒绝时 path 必须描述正在跑的旧图，实际 ${rejected.path}`);
+    assert.ok(
+      rejected.tasks.every((task) => task.id.startsWith('t-') && !['t-analyst', 't-architect', 't-critic'].includes(task.id)),
+      '回的任务清单必须是旧图（fast 三件套），不能混入新算的完整路径',
+    );
+
+    await callTool(ctx, 'teams_stop', {}, exec);
   });
 });

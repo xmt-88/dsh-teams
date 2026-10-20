@@ -680,6 +680,11 @@ function registerTools(ctx, config) {
             reason: { type: 'string' },
             tasks: { type: 'integer' },
             pending: { type: 'integer' },
+            // 拒绝分支会带上在飞任务数 / 批准与当前图指纹；不声明就会被
+            // additionalProperties:false 拒掉整个结果（复核实测：重复 teams_run 与改图后 teams_run）
+            running: { type: 'integer' },
+            approvedGraph: { type: 'string' },
+            currentGraph: { type: 'string' },
           },
         },
         render: (_args, value) =>

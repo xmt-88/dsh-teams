@@ -436,6 +436,15 @@ test('快照：下发审批与排查所需的字段，但不泄露契约内部�
           deps: ['t1'],
           attempts: [],
         },
+        {
+          id: 't3',
+          subject: '并行测试',
+          role: 'verifier',
+          kind: 'verification',
+          status: 'pending',
+          deps: [],
+          attempts: [],
+        },
       ],
     });
 
@@ -466,8 +475,11 @@ test('快照：下发审批与排查所需的字段，但不泄露契约内部�
     });
     assert.ok(withBudget.tasks[0].budgetMs >= 60_000, '开启墙钟后应按角色档位给出预算（executor=heavy）');
 
-    assert.equal(snapshot.stats.total, 2);
+    assert.equal(snapshot.stats.total, 3);
     assert.equal(snapshot.stats.running, 1);
+    // ready 是算出来的，不是状态位：依赖已满足的 pending 任务（复核 #3：以前恒为 0）
+    assert.equal(snapshot.stats.ready, 1, `ready 应等于 1，实际 ${JSON.stringify(snapshot.stats)}`);
+    assert.equal(snapshot.stats.skipped, undefined, 'skipped 从未有写入者，不应再出现在契约里');
   });
 });
 

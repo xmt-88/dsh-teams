@@ -470,6 +470,66 @@ test('调度：重复调用 teams_run 不会起第二个循环', async () => {
   });
 });
 
+test('调度：并发两次 teams_run 只起一条循环，任务不重复派发（复核 HIGH）', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({ delayMs: 30 });
+    const ctx = fakeCtx(fake);
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+
+    // 两次调用必须同时在飞：检查点与同步占位之间只要有一个 await（复位崩溃残留），
+    // 两次调用就都能通过检查、各起一条循环 → 同一任务被派发两次（复核实测 3 个任务派发 6 次）。
+    const results = await Promise.all([startTeamRun(base), startTeamRun(base)]);
+    const started = results.filter((item) => item.started === true);
+    assert.equal(started.length, 1, `应只有一次 startTeamRun 成功，实际 ${JSON.stringify(results)}`);
+
+    await waitFor(async () => !isRunning(stateRoot, 's'), 15000);
+
+    const labels = fake.calls.map((call) => call.label);
+    assert.equal(new Set(labels).size, labels.length, `每个任务只能被派发一次，实际 ${JSON.stringify(labels)}`);
+    assert.equal(labels.length, 3, `快速路径应派发 3 次，实际 ${labels.length} 次`);
+    const graph = await readTasks(stateRoot, 's');
+    assert.equal(graph.tasks.every((task) => task.status === 'done'), true, '全部任务应完成');
+  });
+});
+
+test('调度：运行中重复 teams_run 不得复位在飞任务（R6-08 复核回归）', async () => {
+  await withWorkspace(async (dir) => {
+    // result 延迟 300ms：确保第二次调用时任务真的停在 running
+    const fake = fakeSubagents({ resultDelayMs: 300 });
+    const ctx = fakeCtx(fake);
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const first = await startTeamRun(base);
+    assert.equal(first.started, true);
+
+    // 等某个任务真正进入 running（派发是异步的）
+    let before;
+    for (let i = 0; i < 200; i += 1) {
+      const graph = await readTasks(stateRoot, 's');
+      before = graph.tasks.find((task) => task.status === 'running');
+      if (before !== undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(before !== undefined, '应能观察到在飞任务');
+
+    const second = await startTeamRun(base);
+    assert.equal(second.started, false, '第二个循环必须被拒绝');
+
+    const after = (await readTasks(stateRoot, 's')).tasks.find((task) => task.id === before.id);
+    assert.equal(after.status, 'running', '在飞任务不得被复位成 pending（否则结果会被 epoch 丢弃并重复派发）');
+    assert.equal(after.epoch ?? 0, before.epoch ?? 0, '在飞任务的世代不得被加一');
+
+    await waitFor(async () => !isRunning(stateRoot, 's'), 10000);
+  });
+});
+
 test('计划：已有任务图时不覆盖，除非显式 rebuild', async () => {
   await withWorkspace(async (dir) => {
     const ctx = fakeCtx(fakeSubagents().service);
