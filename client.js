@@ -1364,7 +1364,9 @@ window.__ModuleLoader__.load({
       const running = steps.filter((step) => step.status === 'running').length;
       const total = steps.length;
       const phase = run.phase ?? 'idle';
-      const accent = running > 0 ? WHALE_BLUE : failed > 0 ? '#EF4444' : '#10B981';
+      // 立绘牌固定用蓝色初版形象（与需求分析师卡片同一个蓝），不随运行状态变色——
+      // 状态已经由边框颜色/状态胶囊表达，头像再变一次只会让"这个人是谁"变得难认。
+      const accent = WHALE_BLUE;
       const meta = [
         run.pathLabel ?? run.path ?? '-',
         t(`phase.${phase}`),
@@ -2743,12 +2745,14 @@ window.__ModuleLoader__.load({
               t('set.tabRoles'),
             ),
           ),
-          h(
-            'span',
-            { className: 'dsh-teams-chip dsh-teams-set-chip' },
-            // 角色页签下"已覆盖 N 项"指的是配置项，会误导；角色页不显示它
-            tab === 'roles' ? '' : t('set.covered').replace('{n}', String(overriddenCount)),
-          ),
+          // 角色页签下"已覆盖 N 项"说的是配置项，留着会误导——整个徽标不渲染
+          tab === 'roles'
+            ? null
+            : h(
+                'span',
+                { className: 'dsh-teams-chip dsh-teams-set-chip' },
+                t('set.covered').replace('{n}', String(overriddenCount)),
+              ),
         ),
         ...(tab === 'roles' ? [h(RoleManager, { key: 'roles', t })] : body),
       );

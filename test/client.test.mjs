@@ -634,6 +634,12 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /function GirlArt\(/, '应有矢量形象组件');
   assert.match(source, /function WhaleGirl\(/, '应保留手绘鲸鱼作为回退');
   assert.match(source, /const WHALE_BLUE = '#4D6BFE'/, '用 DeepSeek 经典蓝');
+  // 运行行的立绘牌固定蓝色初版形象：状态由边框/胶囊表达，头像不该再变色
+  assert.match(source, /const accent = WHALE_BLUE;/, '运行行头像应固定蓝色');
+  assert.ok(
+    !/const accent = running > 0 \?/.test(source),
+    '不应再按运行状态给头像换色',
+  );
   assert.match(source, /const ROLE_LOOKS = \{/, '每个角色要有自己的配色（裙装/挂件）');
   assert.match(source, /dsh-teams-whale-accessory/, '装扮挂件要渲染出来');
   // 矢量必须走宿主路由（客户端插件读不了文件）
@@ -1337,6 +1343,6 @@ test('设置页：角色页签下不显示「已覆盖」徽标（那是配置�
   assert.ok(chips()[0].children?.[0], '配置项页应显示覆盖数');
   const tabs = collect(box.tree, (node) => node.props?.role === 'tab');
   tabs[1].props.onClick();
-  assert.equal(chips()[0].children?.[0], '', '角色页清空该徽标');
+  assert.equal(chips().length, 0, '角色页不渲染该徽标');
 });
 ;
