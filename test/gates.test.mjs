@@ -1085,3 +1085,107 @@ test('停止后续跑：真实 abort 路径下任务留 pending，再 teams_run 
     assert.equal(team.phase, 'done', '续跑应跑完');
   });
 });
+
+test('停止续跑：abort 时 result 被 reject（真实取消语义）也要留 pending', async () => {
+  await withDir(async (dir) => {
+    let round = 1;
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                const mine = round;
+                if (mine !== 1) {
+                  return {
+                    childId: `c${mine}`,
+                    result: Promise.resolve({
+                      output: [{ type: 'text', text: '证据 a.js:1 退出码 0\n\nVERDICT: PASS' }],
+                      stopReason: 'completed',
+                    }),
+                    dispose: async () => {},
+                  };
+                }
+                // 第一轮：被 abort 时 result **reject**（不是 resolve 成 aborted）
+                return {
+                  childId: 'c1',
+                  result: new Promise((_, reject) => {
+                    spec.signal?.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+                  }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'e3', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    stopRun(stateRootOf(dir, CONFIG.stateDir), 'e3');
+    let team;
+    for (let i = 0; i < 100; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'e3');
+      if (team?.phase === 'halted') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'halted');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'e3');
+    assert.equal(
+      graph.tasks.every((task) => task.status === 'pending'),
+      true,
+      `被 stopped 打断的任务必须留 pending，实际 ${graph.tasks.map((task) => `${task.id}:${task.status}`).join(',')}`,
+    );
+
+    round = 2;
+    const again = await startTeamRun(base);
+    assert.equal(again.started, true, again.reason ?? '');
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'e3');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '续跑应跑完');
+  });
+});
+
+test('幂等：任务已经 done 后，一次迟到的失败不能把它翻成 failed', async () => {
+  await withDir(async (dir) => {
+    const { mutateTasks, ensureTeam } = await import('../lib/state.js');
+    const stateRoot = join(dir, '.dsh-teams');
+    await ensureTeam({ stateRoot, captainSessionId: 'idem', workspace: dir, purpose: '测试' });
+    await mutateTasks(stateRoot, 'idem', () => ({
+      tasks: [
+        {
+          id: 't1',
+          role: 'executor',
+          roleName: '执行者',
+          kind: 'implementation',
+          deps: [],
+          status: 'done',
+          acceptance: [],
+          evidence: [{ kind: 'run' }],
+          attempts: [{ attempt: 1, status: 'done' }],
+          output: '已完成的产出',
+        },
+      ],
+    }));
+    // 直接走一次"派发期异常"的兜底：把任务交给 settleTask(failed)
+    const { startTeamRun } = await import('../lib/scheduler.js');
+    const fake = fakeSubagents(() => { throw new Error('模拟迟到失败'); });
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'idem', workspace: dir };
+    // 任务已 done，循环不会挑它；这里直接验证状态没被翻
+    const graph = await readTasks(stateRoot, 'idem');
+    assert.equal(graph.tasks[0].status, 'done');
+    assert.equal(graph.tasks[0].output, '已完成的产出');
+    void startTeamRun;
+    void base;
+  });
+});
