@@ -757,3 +757,66 @@ test('角色正文接口只回正文（不含 frontmatter）', async () => {
     assert.match(body, /这是契约正文/);
   });
 });
+
+test('停止后可续跑：halted → 再次 teams_run 从断点继续，不要求重新批准', async () => {
+  await withDir(async (dir) => {
+    let release;
+    const hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    const calls = [];
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                const text = '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS';
+                if (calls.length === 1) return { childId: 'c1', result: hold, dispose: async () => {} };
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'rs', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.equal(stopRun(stateRootOf(dir, CONFIG.stateDir), 'rs'), true);
+    release({ output: [{ type: 'text', text: '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS' }], stopReason: 'completed' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const halted = await readTeam(join(dir, '.dsh-teams'), 'rs');
+    assert.equal(halted.phase, 'halted', '停止后应落到 halted');
+
+    // 续跑：图没变，不需要重新批准
+    const again = await startTeamRun(base);
+    assert.equal(again.started, true, again.reason ?? '应能续跑');
+
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'rs');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(team.phase === 'done' || team.phase === 'failed', '续跑应跑到终态');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'rs');
+    assert.equal(
+      graph.tasks.some((task) => task.status === 'running'),
+      false,
+      '续跑后不应残留 running 任务',
+    );
+  });
+});
