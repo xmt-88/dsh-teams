@@ -22,7 +22,7 @@ import { stateRootOf, ensureTeam, readTeam, readTasks, mutateTeam, appendEvent, 
 import { writeFileAtomic } from './lib/state.js';
 import { authenticatedWebRoutes, registerStateRoutes } from './lib/web-routes.js';
 import { planTeam, approveTeam, startTeamRun, retryFailedTeam, stopRun, isRunning } from './lib/scheduler.js';
-import { readDisabledRoles, writeDisabledRoles, validateToggle } from './lib/role-state.js';
+import { setRoleEnabled, validateToggle } from './lib/role-state.js';
 import { registerCommands } from './lib/commands.js';
 import { summarize, truncate } from './lib/tasks.js';
 
@@ -898,9 +898,7 @@ function registerTools(ctx, config) {
           if (role.builtin === true) return { ok: false, reason: '内置角色不可删除（只能停用）' };
           await rm(role.path, { force: true });
           invalidateRoles(stateRoot);
-          const disabled = await readDisabledRoles(stateRoot);
-          disabled.delete(role.slug);
-          await writeDisabledRoles(stateRoot, disabled);
+          await setRoleEnabled(stateRoot, role.slug, true);
           await appendEvent({
             stateRoot,
             type: 'note',
@@ -914,10 +912,7 @@ function registerTools(ctx, config) {
         const allowed = validateToggle(role.slug, enabled);
         if (!allowed.ok) return { ok: false, reason: allowed.reason };
 
-        const disabled = await readDisabledRoles(stateRoot);
-        if (enabled) disabled.delete(role.slug);
-        else disabled.add(role.slug);
-        await writeDisabledRoles(stateRoot, disabled);
+        await setRoleEnabled(stateRoot, role.slug, enabled);
         invalidateRoles(stateRoot);
         await appendEvent({
           stateRoot,

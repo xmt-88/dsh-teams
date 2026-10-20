@@ -19,7 +19,7 @@ import { route, adaptSteps, buildSteps, PATH_TEMPLATES } from '../lib/router.js'
 import { validateCustomRole, loadRoles } from '../lib/roles.js';
 import { graphFingerprint, planTeam, approveTeam, startTeamRun } from '../lib/scheduler.js';
 import { readTeam, readTasks, userRolesDir, appendJsonl } from '../lib/state.js';
-import { readDisabledRoles, writeDisabledRoles, validateToggle, CORE_ROLES } from '../lib/role-state.js';
+import { readDisabledRoles, writeDisabledRoles, setRoleEnabled, validateToggle, CORE_ROLES } from '../lib/role-state.js';
 import { buildRolesPayload, applyRoleAction } from '../lib/web-routes.js';
 
 /* ================================================================== *
@@ -285,15 +285,15 @@ async function runFast(dir, reply, name = 's') {
 
 test('质量门：验证员写 FAIL → 团队失败（不再"跑完就算过"）', async () => {
   await withDir(async (dir) => {
+    // 只让 verification 门挂：review 必须通过，否则 verifier 根本轮不到派发
     const { team } = await runFast(dir, (label) =>
-      label.includes('verifier') || label.includes('code-reviewer')
-        ? '证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
-        : '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
+      label.includes('verifier') ? '证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL' : '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
     );
-    assert.equal(team.phase, 'failed', '有任务判 FAIL，团队必须失败');
+    assert.equal(team.phase, 'failed', '验证员判 FAIL，团队必须失败');
     const graph = await readTasks(join(dir, '.dsh-teams'), 's');
-    const gate = graph.tasks.find((task) => task.kind === 'review' || task.kind === 'verification');
-    assert.ok(gate);
+    // 只看 verification 门：review 是通过的，不能拿它当断言对象
+    const gate = graph.tasks.find((task) => task.kind === 'verification');
+    assert.ok(gate, '应有 verification 任务');
     assert.notEqual(gate.status, 'done', '判 FAIL 的门不应该是 done');
   });
 });
@@ -594,7 +594,9 @@ test('驳回后其它已通过的门会重跑（代码变了，旧结论过期�
     const reviewRuns = calls.filter((label) => label.includes('code-reviewer')).length;
     assert.ok(reviewRuns >= 2, `重做后 review 必须重跑，实际 ${reviewRuns} 次`);
     // 门必须在实现步骤之后重跑，不能与它并行
-    const lastExecutor = calls.lastIndexOf('executor');
+    // ⚠️ calls 里的元素形如 `t-executor:executor`，不能用 lastIndexOf('executor')
+    const lastExecutor = calls.map((label) => label.includes('t-executor:')).lastIndexOf(true);
+    assert.ok(lastExecutor >= 0, '应至少派发过一次执行者');
     const reviewAfter = calls.findIndex((label, index) => index > lastExecutor && label.includes('code-reviewer'));
     assert.ok(reviewAfter > lastExecutor, 'review 应排在重做的执行者之后');
   });
@@ -682,4 +684,76 @@ test('风险词：中文高频口语词也能命中', () => {
     const decision = route({ taskText: text, filesTouched: 1 });
     assert.equal(decision.score.risk, 2, `应识别为高风险：${text}`);
   }
+});
+
+test('判定解析：结尾贴示例不能把真实 FAIL 翻成 PASS（fail-open 回归）', () => {
+  // 真实 FAIL + 后面的格式示例 → 歧义 → 按未通过处理
+  assert.equal(parseVerdict('问题一堆\n\nVERDICT: FAIL\n\n示例格式：\nVERDICT: PASS'), undefined);
+  // 回显指令（`PASS|FAIL|BLOCKED`）不是判定
+  assert.equal(parseVerdict('请按格式输出\nVERDICT: PASS|FAIL|BLOCKED'), undefined);
+  // 围栏代码块里的示例要剥掉，只认块外的真实判定
+  assert.equal(parseVerdict('示例\n\n```\nVERDICT: PASS\n```\n\n实际：\nVERDICT: FAIL'), 'FAIL');
+  // 行内提到不算
+  assert.equal(parseVerdict('我给出 VERDICT: PASS 之后又补充两点\n- 一\n- 二'), undefined);
+});
+
+test('判定解析：同一段落里出现两个不同判定 → 歧义（fail-closed）', () => {
+  assert.equal(parseVerdict('VERDICT: FAIL\nVERDICT: PASS'), undefined);
+  assert.equal(parseVerdict('VERDICT: FAIL\n\nVERDICT: BLOCKED'), undefined);
+});
+
+test('任务图指纹：改 subject/objective/order/workspace 也会变', () => {
+  const base = { tasks: [{ id: 'x', role: 'executor', kind: 'implementation', deps: [], acceptance: [] }] };
+  const variants = [
+    { ...base.tasks[0], subject: '新目标' },
+    { ...base.tasks[0], objective: '新描述' },
+    { ...base.tasks[0], order: 3 },
+    { ...base.tasks[0], workspace: '/other' },
+  ];
+  for (const variant of variants) {
+    assert.notEqual(
+      graphFingerprint({ tasks: [base.tasks[0]] }),
+      graphFingerprint({ tasks: [variant] }),
+      `改 ${Object.keys(variant).find((key) => variant[key] !== base.tasks[0][key])} 后指纹必须变`,
+    );
+  }
+});
+
+test('角色启停：并发写不丢（原子读-改-写）', async () => {
+  await withDir(async (stateRoot) => {
+    const slugs = ['analyst', 'architect', 'critic', 'explore', 'orchestrator', 'document-specialist'];
+    await Promise.all(slugs.map((slug) => setRoleEnabled(stateRoot, slug, false)));
+    const disabled = await readDisabledRoles(stateRoot);
+    assert.equal(disabled.size, slugs.length, `6 个并发停用必须全部落盘，实际 ${disabled.size}`);
+  });
+});
+
+test('角色启停：不存在的角色被拒绝', async () => {
+  await withDir(async (stateRoot) => {
+    const result = await applyRoleAction({ stateRoot, body: { action: 'toggle', role: 'no-such-role', enabled: false } });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /找不到角色/);
+  });
+});
+
+test('角色正文接口只回正文（不含 frontmatter）', async () => {
+  await withDir(async (stateRoot) => {
+    const saved = await applyRoleAction({
+      stateRoot,
+      body: {
+        action: 'save',
+        role_id: 'body-test',
+        name: '正文测试',
+        description: '描述',
+        prompt: '这是契约正文。',
+      },
+    });
+    assert.equal(saved.ok, true);
+    const text = await readFile(join(userRolesDir(stateRoot), 'body-test.md'), 'utf8');
+    assert.match(text, /^---/, '文件里应该有 frontmatter');
+    // 路由层剥掉 frontmatter 的逻辑
+    const body = text.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+    assert.ok(!body.includes('name:'), '正文里不应含 frontmatter');
+    assert.match(body, /这是契约正文/);
+  });
 });

@@ -1532,6 +1532,7 @@ window.__ModuleLoader__.load({
         rolesOpen
           ? h(RolesPanel, {
               sessionId: (team !== null && team !== undefined ? team.captainSessionId : props.sessionId) ?? '',
+              workspace: (team !== null && team !== undefined ? team.workspace : '') || props.workspace || '',
               t,
               onClose: () => setRolesOpen(false),
             })
@@ -1550,7 +1551,7 @@ window.__ModuleLoader__.load({
      *   - 开关是独立 button[role=switch]，状态用「旋钮位置 + 文字」双通道编码
      *   - 删除走行内确认条（不是整页弹窗），Esc 逐层退
      */
-    function RolesPanel({ sessionId, t, onClose }) {
+    function RolesPanel({ sessionId, workspace, t, onClose }) {
       const [state, setState] = React.useState({ status: 'loading', roles: [], coreRoles: [], error: undefined });
       const [view, setView] = React.useState('builtin');
       const [openSlug, setOpenSlug] = React.useState(undefined);
@@ -1560,7 +1561,11 @@ window.__ModuleLoader__.load({
 
       const load = React.useCallback(async () => {
         try {
-          const response = await fetch(`/plugins/dsh-teams/roles?session=${encodeURIComponent(sessionId)}`, {
+          const query = new URLSearchParams();
+          if (sessionId) query.set('session', sessionId);
+          // 角色是工作区级的：多工作区时必须带上，否则会读写到别的工作区
+          if (workspace) query.set('workspace', workspace);
+          const response = await fetch(`/plugins/dsh-teams/roles?${query.toString()}`, {
             credentials: 'same-origin',
           });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1583,7 +1588,7 @@ window.__ModuleLoader__.load({
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify({ ...body, workspace }),
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || payload.ok !== true) {
@@ -1832,6 +1837,7 @@ window.__ModuleLoader__.load({
           : h(RoleEditor, {
               t,
               session: sessionId,
+              workspace,
               mode: editor.mode,
               role: editor.role,
               from: editor.from,
@@ -1840,6 +1846,7 @@ window.__ModuleLoader__.load({
                 setEditor(undefined);
                 await load();
               },
+              workspace,
               onCopy: (role) => setEditor({ mode: 'create', from: role }),
               onSubmit: act,
             }),
@@ -1847,7 +1854,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 角色编辑器 / 查看器：新建、编辑、查看只读、从内置复制。 */
-    function RoleEditor({ t, session, mode, role, from, onCancel, onSaved, onSubmit, onCopy }) {
+    function RoleEditor({ t, session, workspace, mode, role, from, onCancel, onSaved, onSubmit, onCopy }) {
       const seed = mode === 'view' || mode === 'edit' ? role : undefined;
       const source = from ?? seed;
       const [form, setForm] = React.useState({
@@ -1874,7 +1881,7 @@ window.__ModuleLoader__.load({
         (async () => {
           try {
             const response = await fetch(
-              `/plugins/dsh-teams/roles/body?session=${encodeURIComponent(session ?? '')}&role=${encodeURIComponent(source.slug)}`,
+              `/plugins/dsh-teams/roles/body?session=${encodeURIComponent(session ?? '')}&workspace=${encodeURIComponent(workspace ?? '')}&role=${encodeURIComponent(source.slug)}`,
               { credentials: 'same-origin' },
             );
             if (!response.ok) return;
