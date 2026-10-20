@@ -562,3 +562,131 @@ test('批准闸门：没有会话上下文时直接拒绝（captainOf 先于审�
     await assert.rejects(() => approve.execute({}, { callId: 'c2' }), /无法确定队长会话/);
   });
 });
+
+/* ================================================================== *
+ * 角色路由的 HTTP 契约（直接调 handler，用假 req/res）
+ * ================================================================== */
+
+/** 假的 Node 请求：够 EventEmitter 那套用。 */
+function fakeReq({ method = 'GET', url = '/', body } = {}) {
+  const handlers = new Map();
+  const req = {
+    method,
+    url,
+    on(event, handler) {
+      handlers.set(event, handler);
+      return req;
+    },
+    destroy() {},
+  };
+  // 延后触发 data/end，模拟流式读体
+  setTimeout(() => {
+    if (body !== undefined) handlers.get('data')?.(Buffer.from(JSON.stringify(body)));
+    handlers.get('end')?.();
+  }, 0);
+  return req;
+}
+
+/** 假的 Node 响应：捕获状态码与 JSON。 */
+function fakeRes() {
+  const out = { status: 0, headers: undefined, body: undefined };
+  return {
+    out,
+    writeHead(status, headers) {
+      out.status = status;
+      out.headers = headers;
+    },
+    end(chunk) {
+      out.body = chunk === undefined ? undefined : JSON.parse(String(chunk));
+    },
+  };
+}
+
+async function callRoute(ctx, path, options) {
+  const route = ctx.__routes.find((item) => item.path === path);
+  assert.ok(route, `应注册路由 ${path}`);
+  const res = fakeRes();
+  await route.handler(fakeReq(options), res);
+  return res.out;
+}
+
+test('HTTP：GET /roles 返回内置 16 个角色与核心角色清单', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const out = await callRoute(ctx, '/plugins/dsh-teams/roles', { method: 'GET', url: '/plugins/dsh-teams/roles' });
+    assert.equal(out.status, 200);
+    assert.equal(out.body.roles.length, 16);
+    assert.deepEqual(out.body.coreRoles, ['executor', 'verifier']);
+    assert.equal(out.body.roles.every((role) => typeof role.enabled === 'boolean'), true);
+    assert.equal(out.headers['cache-control'], 'no-store');
+  });
+});
+
+test('HTTP：POST /roles 停用角色并返回新列表；不存在的角色 400', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const ok = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/roles',
+      body: { action: 'toggle', role: 'critic', enabled: false },
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.ok, true);
+    assert.equal(ok.body.roles.find((role) => role.slug === 'critic').enabled, false);
+
+    const bad = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/roles',
+      body: { action: 'toggle', role: 'no-such', enabled: false },
+    });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.reason, /找不到角色/);
+  });
+});
+
+test('HTTP：POST /roles 保存自定义角色（含触发词）后能在列表里看到', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const saved = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/roles',
+      body: {
+        action: 'save',
+        role_id: 'db-expert',
+        name: '数据库专家',
+        description: '慢查询与索引',
+        prompt: '你是数据库专家。',
+        permissions: 'readonly',
+        tier: 'light',
+        triggers: ['sql', '索引'],
+      },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const role = saved.body.roles.find((item) => item.slug === 'db-expert');
+    assert.ok(role);
+    assert.deepEqual(role.triggers, ['sql', '索引']);
+    assert.equal(role.builtin, false);
+  });
+});
+
+test('HTTP：GET /roles/body 只回正文；非法 role 参数 400', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const out = await callRoute(ctx, '/plugins/dsh-teams/roles/body', {
+      method: 'GET',
+      url: '/plugins/dsh-teams/roles/body?role=verifier',
+    });
+    assert.equal(out.status, 200);
+    assert.ok(!out.body.body.includes('permissions:'), '正文里不应含 frontmatter');
+    assert.match(out.body.body, /验证|VERDICT/);
+
+    const bad = await callRoute(ctx, '/plugins/dsh-teams/roles/body', {
+      method: 'GET',
+      url: '/plugins/dsh-teams/roles/body?role=..%2F..%2Fetc',
+    });
+    assert.equal(bad.status, 400, '非法角色 id 必须拒绝');
+  });
+});
+
+test('HTTP：GET /roles 与 /roles/body 只允许 GET/POST 对应方法', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const wrong = await callRoute(ctx, '/plugins/dsh-teams/roles/body', { method: 'POST', url: '/plugins/dsh-teams/roles/body' });
+    assert.equal(wrong.status, 405);
+  });
+});
