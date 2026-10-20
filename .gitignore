@@ -16,3 +16,7 @@ Thumbs.db
 # 临时调试产物
 *.tmp
 .tmp/
+
+# 审计期的临时探针（不属于产物）
+tmp-*.mjs
+docs/_r*.mjs
