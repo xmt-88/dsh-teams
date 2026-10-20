@@ -690,3 +690,32 @@ test('HTTP：GET /roles 与 /roles/body 只允许 GET/POST 对应方法', async 
     assert.equal(wrong.status, 405);
   });
 });
+
+test('HTTP：未知 workspace 返回 400，不静默写到第一个工作区', async () => {
+  await withWorkspace(async ({ ctx }) => {
+    const out = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'GET',
+      url: '/plugins/dsh-teams/roles?workspace=D%3A%5Cother%5Cproject',
+    });
+    assert.equal(out.status, 400, '未知工作区必须拒绝');
+    assert.equal(out.body.error, 'unknown workspace');
+
+    const post = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/roles',
+      body: { action: 'toggle', role: 'critic', enabled: false, workspace: 'D:\\other\\project' },
+    });
+    assert.equal(post.status, 400, '写操作同样拒绝');
+  });
+});
+
+test('HTTP：带正确 workspace 时读写落在同一工作区', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const out = await callRoute(ctx, '/plugins/dsh-teams/roles', {
+      method: 'GET',
+      url: `/plugins/dsh-teams/roles?workspace=${encodeURIComponent(dir)}`,
+    });
+    assert.equal(out.status, 200);
+    assert.equal(out.body.roles.length, 16);
+  });
+});
