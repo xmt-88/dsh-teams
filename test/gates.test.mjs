@@ -1189,3 +1189,26 @@ test('幂等：任务已经 done 后，一次迟到的失败不能把它翻成 f
     void base;
   });
 });
+
+test('重建归档：归档标题用上一轮图自己的 subject，不能被新任务串掉', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'arc', workspace: dir };
+    await planTeam({ ...base, task: '第一轮的任务' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    for (let i = 0; i < 200; i += 1) {
+      const team = await readTeam(join(dir, '.dsh-teams'), 'arc');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    // 第二轮：重建（模拟 teams_plan 先把 purpose 换成新任务）
+    await planTeam({ ...base, task: '第二轮的新任务', forcePath: 'fast', rebuild: true });
+
+    const runsFile = join(dir, '.dsh-teams', 'runs', 'arc.jsonl');
+    const lines = (await readFile(runsFile, 'utf8')).split('\n').filter(Boolean);
+    assert.ok(lines.length >= 1, '应有归档记录');
+    const archived = JSON.parse(lines[lines.length - 1]);
+    assert.equal(archived.subject, '第一轮的任务', `归档标题必须是上一轮的任务，实际「${archived.subject}」`);
+  });
+});

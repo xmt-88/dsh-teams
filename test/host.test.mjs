@@ -11,7 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -513,11 +513,22 @@ test('teams_role_save 覆盖同名内置角色时会如实标记', async () => {
   });
 });
 
-test('工作区无 cwd 时退回进程工作目录，不抛错', async () => {
-  await withWorkspace(async ({ ctx }) => {
+test('工作区无 cwd 时退回状态根，不抛错（且不写进真实工作区）', async () => {
+  // ⚠️ 这条用例的回退目标是"解析后的状态根"，以前它等于 process.cwd()，
+  // 于是测试把事件写进了运行者的真实工作区（真实踩过：污染了用户的 .dsh-teams）。
+  // 这里把 stateDir 指到临时目录，回退目标就被隔离了。
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-teams-nocwd-'));
+  try {
+    const ctx = fakeContext({ workspace: undefined });
+    apply(ctx, { stateDir: dir });
     const result = await callTool(ctx, 'teams_route', { task: '调一下按钮颜色' }, { agent: { id: 's1', session: { header: {} } } });
     assert.equal(result.path, 'fast');
-  });
+    // 事件必须落在临时目录，而不是真实工作区
+    const written = await readdir(dir).catch(() => []);
+    assert.ok(written.includes('events.jsonl'), '事件应写在临时状态根里');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('批准闸门：有审批通道时，用户拒绝则计划不被批准', async () => {
