@@ -1846,7 +1846,6 @@ window.__ModuleLoader__.load({
                 setEditor(undefined);
                 await load();
               },
-              workspace,
               onCopy: (role) => setEditor({ mode: 'create', from: role }),
               onSubmit: act,
             }),
