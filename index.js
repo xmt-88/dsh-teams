@@ -239,6 +239,8 @@ function registerTools(ctx, config) {
             notes: decision.notes,
             needsUiDesign: decision.needsUiDesign,
             escalated: decision.escalated,
+            // 任务描述过短（<12 字）时评分不可靠：算出来就要让调用方看见（审计 R6-03）
+            ambiguous: decision.ambiguous === true,
             task: args.task,
             roleChain: decision.steps.map((step) => step.role),
             stepIds: decision.steps.map((step) => step.id),
@@ -263,7 +265,14 @@ function registerTools(ctx, config) {
           role_chain: decision.steps.map((step) => step.role),
           needs_ui_design: decision.needsUiDesign,
           escalated: decision.escalated,
-          notes: [...decision.notes, ...decision.reasons],
+          ambiguous: decision.ambiguous === true,
+          notes: [
+            ...decision.notes,
+            ...decision.reasons,
+            ...(decision.ambiguous === true
+              ? ['任务描述过短（<12 字），评分可能不准；补一句具体目标能让路径更可靠']
+              : []),
+          ],
         };
       },
     }),

@@ -228,9 +228,9 @@ test('任务图：完整路径的并行组被正确识别', async () => {
   const security = graph.tasks.find((task) => task.id === 't-security');
   const testTask = graph.tasks.find((task) => task.id === 't-test');
 
-  // 三者都只依赖 executor → 同一批可并行
+  // 三者都依赖 executor → 同一批可并行（安全门也必须审"这次改动"，见审计 R6-15）
   assert.deepEqual(review.deps, ['t-executor']);
-  assert.deepEqual(security.deps, ['t-architect']);
+  assert.deepEqual(security.deps, ['t-executor']);
   assert.deepEqual(testTask.deps, ['t-executor']);
   // verify 依赖它们全部
   const verify = graph.tasks.find((task) => task.id === 't-verify');
