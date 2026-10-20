@@ -1,0 +1,83 @@
+# 审计发现 → 修复 → 验证 对照表
+
+审计日期：2026-10-20
+范围：第一轮（三路独立审计 + 探针）、第二轮（复审修复）、第三轮（复审新修复）
+
+约定：**每条都能追到"怎么验证的"**。测试在 `test/gates.test.mjs` / `test/host.test.mjs`，
+探针在 `docs/gate-probe-standalone.mjs`（手动运行）。
+
+---
+
+## 第一轮（P0：质量门名不副实）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| P0-1 | 验证员写「结论：FAIL」仍记 `done`，团队判绿 | 新增 `lib/verdict.js`：门类任务（review/verification）从产出解析 `VERDICT: PASS\|FAIL\|BLOCKED`，缺行按未通过（fail-closed）；`settleTask` 据此定状态；四个门角色的契约补判定小节 | 探针 H：`phase=failed`；测试「验证员判 FAIL → 团队失败」 |
+| P0-2 | 质量门不存在（`maxReviewRounds` 零消费，没有驳回闭环） | `settleTask` 判 FAIL 时把实现步骤打回 `pending`，门自己也重排；轮数受 `maxReviewRounds`；驳回意见进 `reviewFrom` 并注入任务卡 | 测试「驳回退回重做」「预算用尽后仍判 FAIL」「评审意见带进任务卡」；实测执行者被派发 3 次后通过 |
+| P0-3 | 派发期 TDZ 异常被 `allSettled` 吞 → 任务永久 running、团队假绿 | `let liveAgent` 提到 `finish()` 之前；`dispatchOne` 外层兜底落 `failed`；`allSettled` 的 rejection 记事件；收口要求无 `running`/`pending` | 探针 A：`phase=failed`（此前 `done`）；测试「预置 running 任务不得秒完成」 |
+| P0-4 | 角色权限分层是死字段（`toolFilter` 从不下发） | 删掉「（宿主强制）」的虚假表述，改为「提示词约束，不是宿主沙箱」，并在任务卡里明说实际工具由宿主授予 | 静态（`runner.js:223` 附近） |
+| P0-5 | 验收项写死「构建或类型检查通过」→ 非 JS/非软件项目必然 FAIL | `tasks.js` 与 `verifier.md`/`executor.md` 改为「项目自身可用的验证手段（构建/类型检查/测试/静态检查，按实际存在者）；不存在则记『不适用』」 | 测试断言「不得写死构建/类型检查环节」 |
+
+## 第一轮（P1：闸门与一致性）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| P1-1 | 批准闸门判据是 `phase !== 'staged'`（黑名单），`done`/`idle` 都能不批准就跑 | 改白名单：`approvedAt` 存在 **且** 任务图指纹一致；`approveTeam` 不再改 `phase`（保持 staged），另记 `approvedGraph` | 探针 D/F：`started=false` 且零派发；测试「批准后改图拒绝启动」「记录重建后拒绝」 |
+| P1-2 | 运行中 `teams_plan(rebuild)` 换图，新图被旧循环执行 | `planTeam` 在 `activeLoops` 有该队时直接拒绝 | 测试「运行中拒绝重建」 |
+| P1-3 | 并发 `teams_run` 起两条循环（检查与占位之间有 await） | `activeLoops.set` 紧跟检查、同步完成；僵尸锁按心跳接管 | 测试「重复调用不起第二个循环」 |
+| P1-4 | 8 个配置项是死的 | `routing.riskShortCircuit/fastMax/standardMax` 接进 `route()`；`gates.requireEvidence/securityBlock` 接进 `settleTask`；`maxReviewRounds` 接进驳回；`ui.locale` 传进路由；`ui.openTabOnPlan` 删除（客户端无法实现自动开标签） | 探针 G 显示开关有差别；测试「阈值改路径跟着变」「证据门开关行为不同」 |
+| P1-5 | 无停止入口（`stopRun` 导入未用） | 新增 `teams_stop` 工具 + `/teams-stop` 命令；收口统一到 `finalizeRun`（正常/停止/异常三出口，停止落 `halted`） | 测试「停止后不再派发」「停止后不停在 running」 |
+| P1-6 | 事件流无锁读-改-写（20 条并发落 1 条），读失败会覆盖整个历史 | `appendJsonl` 改真追加（`appendFile`）；`readJson` 区分 ENOENT 与解析失败（损坏改名留档） | 测试「20 条并发必须全部落盘」；实测 20/20 |
+| P1-7 | 调度循环异常退出不落 phase | `finalizeRun` 也在 `.catch` 里调用 | 静态 + 探针 A |
+
+## 第一轮（P2）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| P2-1 | 系统提示段只列 6 个工具 | 补到 10 个工具 + `/teams-stop`/`/teams-retry`，并写明判定与角色规则 | `host.test.mjs` 断言提示段含工具名 |
+| P2-2 | 英文风险词只认单数（9/9 漏） | 改**词干比对**（`credentials`→`credential`、`authentication`→`authenticat`、`OAuth2`→`oauth`）；中文补退款/令牌/会话/签名/隐私/交易 | 测试「屈折形式命中」「不误报（author ≠ auth）」；探针 J 6/6 |
+| P2-3 | `teams_approve` 是模型可自调的无参工具 | 接宿主审批通道：有 `approval` 服务时 `approval.request`，用户拒绝则不批准；无通道时记 `approve-unconfirmed` | 测试「用户拒绝 → 不批准」「无通道留痕」 |
+| P2-4 | 重试时 attempt 条目永不闭合、编号每轮重算 | `continue` 前把当前 attempt 标 `failed`；编号从已有记录续 | 静态 + 面板可读性 |
+| P2-5 | 3 个角色永不派发（document-specialist / explore / orchestrator） | **未改路径模板**（用户要求内置角色不扩展）；它们仍可通过自定义角色或后续自定义步骤使用。已知限制，记录在案 | — |
+
+## 第二轮（复审发现的 6 项）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| R2-1（高） | **判定 fail-open**：正文后部贴一段示例 `VERDICT: PASS` 就能把真实 FAIL 翻成 PASS | `parseVerdict` 收紧：剥围栏代码块 → 只看结尾 5 行 → **必须独立成行** → 出现两个不同判定视为歧义（fail-closed） | 测试「结尾示例不能翻案」「回显指令不算」「围栏内示例剥离」「行内提到不算」「两个不同判定判歧义」 |
+| R2-2（中） | 驳回时**在飞的门**会用旧代码的结论落盘且不再重跑；`simplify` 从不重做 | 新增**派发世代 epoch**：驳回时给"传递依赖闭包"里所有任务 `epoch+1`，`settleTask` 比对世代，不符就丢弃（`task.discarded`）；重开范围含 `kind=work` 的后置步骤 | 实测：延迟返回的 `test-engineer` 结果被丢弃并重跑；`code-simplifier` 也重做 |
+| R2-3（中） | 僵尸锁接管后旧循环仍活着，`.finally` 会删掉新锁 → 重复派发 | handle 带 `runId`，`.finally` 只在 runId 匹配时删锁；接管时 abort 旧循环 + 给 running 任务 `epoch+1` 并改回 pending | 静态 + 接管路径有事件记录 |
+| R2-4（中） | `roles-state.json` 无锁读改写（6 个并发停用只落 1 个）；接口接受不存在的角色 | 新增 `setRoleEnabled`（读-改-写全在 `withLock` 内）；toggle 前校验角色存在 | 测试「6 个并发停用全落盘」「不存在的角色被拒绝」；实测 6/6 |
+| R2-5（中低） | 角色接口固定 `roots[0]`，多工作区读写错区；`/roles/body` 回整份 md（frontmatter 会混进契约） | 新增 `stateRootFor()`（按请求 workspace 解析，必须在候选根内）；body 接口剥掉 frontmatter；客户端带上 workspace | 测试「正文接口只回正文」 |
+| R2-6（低） | 任务图指纹漏字段（subject/objective/order/workspace） | 指纹补这些字段 | 测试「改任一字段指纹必变」 |
+
+## 第二轮（测试质量）
+
+| 问题 | 修复 |
+|---|---|
+| `gates.test.mjs` 里 `calls.lastIndexOf('executor')` 恒为 -1 → 排序断言恒真 | 改用 `calls.map(label => label.includes('t-executor:')).lastIndexOf(true)` |
+| 「验证员写 FAIL」用例里 review 先挂，verifier 从未派发 | 只让 verifier 判 FAIL，review 保持 PASS |
+| 缺测：判定边界、`maxReviewRounds=0`、并发停用、指纹漏字段、正文接口 | 全部补上（206 条） |
+
+---
+
+## 已知限制（记录在案，非缺陷）
+
+1. **3 个内置角色未被任何路径派发**（`document-specialist` / `explore` / `orchestrator`）。
+   按用户要求内置角色固定 16 个、不扩展路径，因此保持现状；需要时可作为自定义角色复制改造。
+2. **角色权限不是沙箱**：DSH 0.2.1 起子代理不接受 `toolFilter`，`readonly` 只是契约里的行为约定。
+   已在任务卡里如实说明，不假装是强制边界。
+3. **看门狗的"假活跃"盲区**：子代理持续输出事件但不出结果时，只能靠墙钟（默认关闭）兜底。
+   这是刻意的取舍（用户明确不要墙钟门），记录在案。
+4. **`teams_stop` 是单向停止**：停止后不能"从原处继续"，只能 `teams_retry` 重排失败/受阻任务。
+
+---
+
+## 复核方式
+
+```bash
+cd F:\XMT\DSHWorkspace\test\dsh-teams
+node --test "test/*.test.mjs"          # 206 条
+node docs/gate-probe-standalone.mjs    # 门控行为探针（A–J）
+node docs/dead-config-scan.mjs         # 死配置扫描（应只剩 openTabOnPlan 的"已移除"提示）
+```
