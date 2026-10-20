@@ -51,6 +51,16 @@
 | R2-5（中低） | 角色接口固定 `roots[0]`，多工作区读写错区；`/roles/body` 回整份 md（frontmatter 会混进契约） | 新增 `stateRootFor()`（按请求 workspace 解析，必须在候选根内）；body 接口剥掉 frontmatter；客户端带上 workspace | 测试「正文接口只回正文」 |
 | R2-6（低） | 任务图指纹漏字段（subject/objective/order/workspace） | 指纹补这些字段 | 测试「改任一字段指纹必变」 |
 
+## 第三轮（复审这批修复本身）
+
+| # | 问题 | 修复 | 验证 |
+|---|---|---|---|
+| R3-1（P0） | **派发无限热循环**：`dispatchEpoch` 的 `const` 声明晚于"找不到角色"早退路径 → TDZ ReferenceError 被循环吞掉（实测 3 秒 7395 条事件、任务恒 pending、phase 永停 running） | 声明上移到函数开头（任何早退之前） | 实测角色缺失 → `phase=failed` 且干净收口；探针 A 组同样通过 |
+| R3-2（中） | `stateRootFor` 匹配不上时**静默回落 `roots[0]`** → 带别的工作区的请求写进了第一个工作区 | 匹配不上返回 400 `unknown workspace`；前缀比对按路径分隔符边界（`C:/work/a` 不再误配 `C:/work/ab`） | 测试「未知 workspace 返回 400」「带正确 workspace 时读写同一区」 |
+| R3-3（中） | `parseVerdict` **误杀合法产出**：`VERDICT: PASS（无阻塞项）`、尾随破折号、整段被围栏包住、判定后还有几行 → 全判 undefined | 行首锚定（允许 `-`/`**`/`>` 装饰）+ 行尾允许说明 + 同一行多个判定词视为"回显格式" + 结尾 8 行 + 剥围栏后为空则退回原文 | 测试 13 种写法：8 种合法形式认得出，回显/歧义/缺行仍 fail-closed |
+| R3-4（中低） | **`stop` 的 abort 是空操作**（`runTask` 没有 `signal` 形参）→ 停止只能等整批跑完，墙钟关闭时可能永远停不下来 | `runTask` 接收 `signal` 并桥接到内部 controller；`dispatchOne`/`runLoop` 串下去；错误信息区分"已停止"与"超时" | 测试「停止打断在跑的子代理」：实测 52ms 收到 abort |
+| R3-5（中） | `task.discarded` **只写不读**：丢弃结果时用户完全看不到 | 丢弃时写一条 warn 事件；快照 `compactTask` 带上该字段 | 测试「丢弃过期结果时事件流留痕」 |
+
 ## 第二轮（测试质量）
 
 | 问题 | 修复 |
