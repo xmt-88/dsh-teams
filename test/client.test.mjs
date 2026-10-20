@@ -1290,3 +1290,53 @@ test('异常态：宿主写调用抛错时卡片必须回到可用状态（不�
   assert.deepEqual(alertsIn(box), ['set.saveFailed'], '应给出可读的失败提示');
   assert.equal(controlAt(box.tree, 'stateDir').props.value, '.teams-x', '失败后保留用户输入');
 });
+
+/* ================================================================== *
+ * 设置页：配置项 / 角色 两个页签
+ * ================================================================== */
+
+/** 按文字找按钮。 */
+function buttonByText(tree, text) {
+  return collect(
+    tree,
+    (node) => node.type === 'button' && node.children?.[0] === text,
+  )[0];
+}
+
+test('设置页：两个页签，默认停在「配置项」', async () => {
+  const { box } = await mountSettingsCard();
+  const tabs = collect(box.tree, (node) => node.props?.role === 'tab');
+  assert.equal(tabs.length, 2, '应有「配置项」「角色」两个页签');
+  assert.equal(tabs[0].props['aria-selected'], 'true', '默认选中配置项');
+  assert.equal(tabs[1].props['aria-selected'], 'false');
+  // 默认页签下仍然是配置项表单
+  assert.ok(controlAt(box.tree, 'scheduler.maxRetries'), '配置项页应有表单');
+  // 角色管理未挂载
+  assert.equal(collect(box.tree, (node) => node.props?.['aria-label'] === '搜索角色（名称 / 描述 / 触发词）').length, 0);
+});
+
+test('设置页：切到「角色」后配置表单让位，角色管理挂上', async () => {
+  const { box } = await mountSettingsCard();
+  const tabs = collect(box.tree, (node) => node.props?.role === 'tab');
+  tabs[1].props.onClick();
+
+  assert.equal(controlAt(box.tree, 'scheduler.maxRetries'), undefined, '角色页不应再显示配置表单');
+  assert.equal(collect(box.tree, (node) => node.type === 'fieldset').length, 0, '不应再有配置分组');
+  // 角色管理的元素挂在根节点下（假 React 不递归渲染子组件，所以断言到"挂上了"这一层）
+  const mounted = collect(box.tree, (node) => typeof node.type === 'function');
+  assert.ok(mounted.length >= 1, '应挂载角色管理组件');
+  assert.equal(typeof mounted[0].props?.t, 'function', '角色管理应拿到文案函数');
+});
+
+test('设置页：角色页签下不显示「已覆盖」徽标（那是配置项的说法）', async () => {
+  const { box } = await mountSettingsCard();
+  const chips = () =>
+    collect(box.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-set-chip'));
+  assert.equal(chips().length, 1, '配置项页有一个覆盖数徽标');
+  // 测试环境的 t() 返回 key 本身，所以只断言"有内容"
+  assert.ok(chips()[0].children?.[0], '配置项页应显示覆盖数');
+  const tabs = collect(box.tree, (node) => node.props?.role === 'tab');
+  tabs[1].props.onClick();
+  assert.equal(chips()[0].children?.[0], '', '角色页清空该徽标');
+});
+;

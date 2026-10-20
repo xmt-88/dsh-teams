@@ -132,8 +132,18 @@ window.__ModuleLoader__.load({
       'role.tier': '超时档',
       'role.description': '一句话说明',
       'role.prompt': '角色契约正文',
+      'role.catBuiltin': '内置',
+      'role.search': '搜索角色（名称 / 描述 / 触发词）',
+      'role.noMatch': '没有匹配的角色',
+      'role.workspace': '工作区',
+      'role.workspaceOf': '工作区：{path}',
+      'role.back': '返回列表',
+      'role.categoryHint': '数据 / 前端 / 文档',
       'role.editor': '角色编辑器',
       // ---- 设置卡片 ----
+      'set.tabs': '设置分区',
+      'set.tabConfig': '配置项',
+      'set.tabRoles': '角色',
       'set.nav': '团队',
       'set.title': 'DSH Teams 设置',
       'set.summary': '配置状态目录、路径路由、并发与重试、角色超时、看门狗与质量门。',
@@ -299,8 +309,18 @@ window.__ModuleLoader__.load({
       'role.tier': 'Timeout tier',
       'role.description': 'One-line summary',
       'role.prompt': 'Role contract',
+      'role.catBuiltin': 'built-in',
+      'role.search': 'Search roles (name / description / triggers)',
+      'role.noMatch': 'No matching roles',
+      'role.workspace': 'Workspace',
+      'role.workspaceOf': 'Workspace: {path}',
+      'role.back': 'Back to list',
+      'role.categoryHint': 'data / frontend / docs',
       'role.editor': 'Role editor',
       // ---- Settings card ----
+      'set.tabs': 'Settings sections',
+      'set.tabConfig': 'Settings',
+      'set.tabRoles': 'Roles',
       'set.nav': 'Team',
       'set.title': 'DSH Teams settings',
       'set.summary': 'Configure the state directory, routing, concurrency and retries, role timeouts, watchdog, and quality gates.',
@@ -442,23 +462,50 @@ window.__ModuleLoader__.load({
 .dsh-teams-chip[data-state="blocked"]{color:var(--dsw-alias-state-warn-primary);
   border-color:var(--dsw-alias-state-warn-primary);}
 
+/* ============ 设置页：页签 + 角色管理 ============ */
+/* 设置页是宽屏（600–800px），所以角色用多列网格；窄面板那套单列不适用 */
+.dsh-teams-set-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.dsh-teams-set-tabs{display:flex;gap:2px;padding:2px;border-radius:9px;
+  background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);}
+.dsh-teams-set-tabs button{height:26px;padding:0 12px;border:0;border-radius:7px;cursor:pointer;
+  background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;font-family:inherit;
+  white-space:nowrap;}
+.dsh-teams-set-tabs button[aria-selected="true"]{background:var(--dsw-alias-bg-layer-2);
+  color:var(--dsw-alias-label-primary);font-weight:600;
+  box-shadow:0 1px 2px color-mix(in srgb,black 8%,transparent);}
+.dsh-teams-set-tabs button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}
+/* 角色区 */
+.dsh-teams-role-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+.dsh-teams-role-head .dsh-teams-seg{flex:none;width:auto;margin-bottom:0;padding:2px;}
+.dsh-teams-role-head .dsh-teams-seg button{flex:none;padding:0 12px;}
+.dsh-teams-role-search{flex:1;min-width:140px;height:28px;box-sizing:border-box;border-radius:8px;
+  padding:0 9px;font-size:12px;font-family:inherit;color:var(--dsw-alias-label-primary);
+  background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}
+.dsh-teams-role-search:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px;}
+.dsh-teams-role-ws{font-size:11px;color:var(--dsw-alias-label-secondary);flex:none;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* 网格：宽屏两列，窄屏一列 */
+.dsh-teams-role-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px;}
+.dsh-teams-role-card{display:grid;grid-template-columns:32px minmax(0,1fr) 34px;column-gap:9px;
+  align-items:start;padding:10px;border-radius:10px;
+  border:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 12%,var(--dsw-alias-border-l1));
+  background:var(--dsw-alias-bg-layer-2);
+  box-shadow:0 1px 2px color-mix(in srgb,black 7%,transparent);}
+.dsh-teams-role-card[data-off="true"] .dsh-teams-role-avatar,
+.dsh-teams-role-card[data-off="true"] .dsh-teams-role-desc{opacity:.6;}
+.dsh-teams-role-card .dsh-teams-role-name{font-size:13px;font-weight:600;line-height:17px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);}
+.dsh-teams-role-card .dsh-teams-role-desc{font-size:12px;line-height:1.45;margin-top:4px;
+  color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden;}
+.dsh-teams-role-card .dsh-teams-role-actions{grid-column:1 / -1;display:flex;gap:6px;margin-top:8px;}
+.dsh-teams-role-card .dsh-teams-role-actions > button{height:26px;font-size:12px;border-radius:7px;flex:1;}
+/* 编辑视图（占满角色区，不做浮层：设置页容器不确定，浮层容易定位错） */
+.dsh-teams-role-editor{display:flex;flex-direction:column;gap:10px;}
+.dsh-teams-role-editor-foot{display:flex;gap:8px;padding-top:4px;}
 /* ============ 角色页（覆盖层，UI 设计师规范） ============ */
-/* 入口做成工具栏图标而不是第 5 个文字 tab：360px 下 4 个中文 tab + 刷新已经约 290px，
-   再加「角色」中文约 334px、英文约 388px，直接溢出。 */
-.dsh-teams-role-open{width:28px;height:28px;flex:none;display:flex;align-items:center;
-  justify-content:center;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);
-  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);
-  font-size:15px;line-height:1;cursor:pointer;}
-.dsh-teams-role-open:hover{background:var(--dsw-alias-bg-layer-1);}
-.dsh-teams-role-open:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;}
-/* 覆盖层：铺满面板（面板本身较窄，不做弹窗式居中） */
-.dsh-teams-role-sheet{position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;
-  background:var(--dsw-alias-bg-base);}
-.dsh-teams-role-sheet-head{display:flex;align-items:center;gap:8px;padding:8px 10px;
-  border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;}
 .dsh-teams-role-sheet-title{font-size:13px;font-weight:600;flex:1;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dsh-teams-role-sheet-body{flex:1;min-height:0;overflow:auto;padding:8px 10px 14px;}
 /* 分段控件：内置 / 自定义（兼作来源筛选，省掉一个下拉） */
 .dsh-teams-seg{display:flex;gap:4px;padding:3px;margin-bottom:8px;border-radius:9px;
   background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);}
@@ -470,23 +517,10 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary);font-weight:600;
   box-shadow:0 1px 2px color-mix(in srgb,black 8%,transparent);}
 .dsh-teams-seg button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}
-/* 角色行卡：单列（360px 下两列每列只有 158px） */
-.dsh-teams-role-list{display:flex;flex-direction:column;gap:8px;}
-.dsh-teams-role-row{position:relative;display:grid;grid-template-columns:32px minmax(0,1fr) 34px;
-  column-gap:9px;align-items:center;min-height:56px;padding:9px 10px;border-radius:10px;
-  border:1px solid color-mix(in srgb,var(--dsw-alias-label-primary) 12%,var(--dsw-alias-border-l1));
-  background:var(--dsw-alias-bg-layer-2);
-  box-shadow:0 1px 2px color-mix(in srgb,black 7%,transparent),
-             0 3px 8px color-mix(in srgb,black 5%,transparent);}
-.dsh-teams-role-row[data-open="true"]{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l2));}
-.dsh-teams-role-row[data-off="true"]{opacity:.62;}
 .dsh-teams-role-avatar{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;
   justify-content:center;font-size:17px;line-height:1;
   background:color-mix(in srgb,var(--dsw-alias-label-primary) 6%,var(--dsw-alias-bg-layer-2));
   border:1px solid var(--dsw-alias-border-l1);}
-.dsh-teams-role-main{min-width:0;display:flex;flex-direction:column;gap:2px;text-align:left;
-  background:none;border:0;padding:0;cursor:pointer;color:inherit;font-family:inherit;}
-.dsh-teams-role-main:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;}
 .dsh-teams-role-name{font-size:13px;font-weight:600;line-height:17px;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);}
 .dsh-teams-role-meta{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;
@@ -506,9 +540,6 @@ window.__ModuleLoader__.load({
 .dsh-teams-switch[aria-checked="true"]::after{transform:translateX(14px);}
 .dsh-teams-switch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;}
 .dsh-teams-switch:disabled{opacity:.45;cursor:not-allowed;}
-/* 展开区 */
-.dsh-teams-role-detail{grid-column:1 / -1;display:flex;flex-direction:column;gap:6px;
-  padding-top:8px;margin-top:2px;border-top:1px solid var(--dsw-alias-border-l1);}
 .dsh-teams-role-desc{font-size:12px;line-height:1.45;color:var(--dsw-alias-label-secondary);
   display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;}
 .dsh-teams-role-hint{font-size:11px;color:var(--dsw-alias-label-secondary);}
@@ -526,8 +557,6 @@ window.__ModuleLoader__.load({
   background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,var(--dsw-alias-bg-layer-2));
   font-size:12px;}
 .dsh-teams-confirm .dsh-teams-role-actions{margin-top:0;}
-/* 编辑器 */
-.dsh-teams-role-form{display:flex;flex-direction:column;gap:8px;padding-bottom:64px;}
 .dsh-teams-field{display:flex;flex-direction:column;gap:3px;}
 .dsh-teams-field > label{font-size:11px;color:var(--dsw-alias-label-secondary);}
 .dsh-teams-field input,.dsh-teams-field select,.dsh-teams-field textarea{
@@ -537,10 +566,6 @@ window.__ModuleLoader__.load({
 .dsh-teams-field textarea{min-height:180px;resize:vertical;line-height:1.45;}
 .dsh-teams-field input:focus-visible,.dsh-teams-field select:focus-visible,
 .dsh-teams-field textarea:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px;}
-.dsh-teams-role-form-foot{position:absolute;left:0;right:0;bottom:0;display:flex;gap:8px;
-  padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1);
-  background:var(--dsw-alias-bg-base);}
-.dsh-teams-role-form-foot > button{flex:1;height:30px;border-radius:7px;font-size:12px;}
 .dsh-teams-role-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:8px;min-height:96px;border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;
   font-size:12px;color:var(--dsw-alias-label-secondary);text-align:center;}
@@ -1420,8 +1445,6 @@ window.__ModuleLoader__.load({
       const store = props.store;
       const t = props.t ?? ((key) => key);
       const [tab, setTab] = React.useState('runs');
-      // 角色页是覆盖层（不是第 5 个 tab）：360px 下 tab 栏放不下更多文字项
-      const [rolesOpen, setRolesOpen] = React.useState(false);
       const [, setTick] = React.useState(0);
       // 打开会话的能力由面板注册处注入（组件在 factory 作用域里拿不到 ctx）
       const openSession = typeof props.onOpenSession === 'function' ? props.onOpenSession : () => false;
@@ -1465,17 +1488,6 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('span', { style: { flex: 1 } }),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'dsh-teams-role-open',
-            onClick: () => setRolesOpen(true),
-            title: t('role.title'),
-            'aria-label': t('role.title'),
-          },
-          '🎭',
-        ),
         h(
           'button',
           { type: 'button', className: 'dsh-teams-btn', onClick: () => store.refresh() },
@@ -1529,58 +1541,54 @@ window.__ModuleLoader__.load({
         header,
         childBanner,
         h('div', { className: 'dsh-teams-body' }, body),
-        rolesOpen
-          ? h(RolesPanel, {
-              sessionId: (team !== null && team !== undefined ? team.captainSessionId : props.sessionId) ?? '',
-              workspace: (team !== null && team !== undefined ? team.workspace : '') || props.workspace || '',
-              t,
-              onClose: () => setRolesOpen(false),
-            })
-          : null,
       );
     }
 
     /**
-     * 角色页：内置 / 自定义两组，启停 + 查看 / 复制 / 编辑 / 删除。
+     * 角色管理（设置页里的「角色」页签）。
      *
-     * 数据来自宿主 `/plugins/dsh-teams/roles`（GET 读、POST 写）——角色是**工作区级**的，
-     * 没有团队也要能管理，所以它不挂在团队快照上。
+     * 形态与右栏面板不同：设置页是宽屏（600–800px），所以用**多列网格**；
+     * 编辑不浮层，直接占满角色区（设置页容器不确定，浮层容易定位错）。
      *
-     * 交互约定（UI 设计师规范）：
-     *   - 行卡不用 <details>：summary 里嵌开关时，空格键会同时折叠与切换
+     * 交互约定：
+     *   - 卡片不用 <details>：summary 里嵌开关时，空格键会同时折叠与切换
      *   - 开关是独立 button[role=switch]，状态用「旋钮位置 + 文字」双通道编码
      *   - 删除走行内确认条（不是整页弹窗），Esc 逐层退
      */
-    function RolesPanel({ sessionId, workspace, t, onClose }) {
-      const [state, setState] = React.useState({ status: 'loading', roles: [], coreRoles: [], error: undefined });
+    function RoleManager({ t }) {
+      const [state, setState] = React.useState({ status: 'loading', roles: [], coreRoles: [], workspace: '', workspaces: [], error: undefined });
       const [view, setView] = React.useState('builtin');
-      const [openSlug, setOpenSlug] = React.useState(undefined);
+      const [query, setQuery] = React.useState('');
+      const [editing, setEditing] = React.useState(undefined); // { mode, role?, from? }
       const [confirming, setConfirming] = React.useState(undefined);
-      const [editor, setEditor] = React.useState(undefined); // { mode:'view'|'edit'|'create', role? }
       const [busy, setBusy] = React.useState(false);
+      // 多工作区时用户选的那个；空 = 用宿主给的默认
+      const [workspace, setWorkspace] = React.useState('');
 
-      const load = React.useCallback(async () => {
+      const load = React.useCallback(async (targetWorkspace) => {
         try {
-          const query = new URLSearchParams();
-          if (sessionId) query.set('session', sessionId);
-          // 角色是工作区级的：多工作区时必须带上，否则会读写到别的工作区
-          if (workspace) query.set('workspace', workspace);
-          const response = await fetch(`/plugins/dsh-teams/roles?${query.toString()}`, {
-            credentials: 'same-origin',
+          const query_ = new URLSearchParams();
+          if (targetWorkspace) query_.set('workspace', targetWorkspace);
+          const response = await fetch(`/plugins/dsh-teams/roles?${query_.toString()}`, { credentials: 'same-origin' });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload?.detail ?? payload?.error ?? `HTTP ${response.status}`);
+          setState({
+            status: 'ready',
+            roles: payload.roles ?? [],
+            coreRoles: payload.coreRoles ?? [],
+            workspace: payload.workspace ?? '',
+            workspaces: payload.workspaces ?? [],
+            error: undefined,
           });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const payload = await response.json();
-          setState({ status: 'ready', roles: payload.roles ?? [], coreRoles: payload.coreRoles ?? [], error: undefined });
         } catch (cause) {
-          setState({ status: 'failed', roles: [], coreRoles: [], error: String(cause?.message ?? cause) });
+          setState({ status: 'failed', roles: [], coreRoles: [], workspace: '', workspaces: [], error: String(cause?.message ?? cause) });
         }
-      }, [sessionId]);
+      }, []);
 
       React.useEffect(() => {
-        load();
-      }, [load]);
+        load(workspace);
+      }, [load, workspace]);
 
-      // 返回 { ok, reason }：失败原因要能带回编辑器，而不是在界面上统一显示"保存失败"
       const act = async (body) => {
         setBusy(true);
         try {
@@ -1588,15 +1596,15 @@ window.__ModuleLoader__.load({
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ...body, workspace }),
+            body: JSON.stringify({ ...body, workspace: workspace || state.workspace }),
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || payload.ok !== true) {
-            const reason = payload.reason ?? (Array.isArray(payload.errors) ? payload.errors.join('；') : `HTTP ${response.status}`);
+            const reason = payload.reason ?? payload.detail ?? (Array.isArray(payload.errors) ? payload.errors.join('；') : `HTTP ${response.status}`);
             setState((current) => ({ ...current, error: reason }));
             return { ok: false, reason };
           }
-          setState({ status: 'ready', roles: payload.roles ?? [], coreRoles: payload.coreRoles ?? [], error: undefined });
+          setState((current) => ({ ...current, roles: payload.roles ?? current.roles, coreRoles: payload.coreRoles ?? current.coreRoles, error: undefined }));
           return { ok: true };
         } catch (cause) {
           const reason = String(cause?.message ?? cause);
@@ -1607,67 +1615,60 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const toggle = (role) => act({ action: 'toggle', role: role.slug, enabled: role.enabled !== true });
-
       const builtin = state.roles.filter((role) => role.builtin === true);
       const custom = state.roles.filter((role) => role.builtin !== true);
-      const shown = view === 'builtin' ? builtin : custom;
+      const source = view === 'builtin' ? builtin : custom;
+      const shown = query.trim() === ''
+        ? source
+        : source.filter((role) => `${role.name} ${role.slug} ${role.description} ${(role.triggers ?? []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase()));
       const countEnabled = (list) => list.filter((role) => role.enabled !== false).length;
 
-      React.useEffect(() => {
-        const onKey = (event) => {
-          if (event.key !== 'Escape') return;
-          if (confirming !== undefined) {
-            setConfirming(undefined);
-            return;
-          }
-          if (editor !== undefined) {
-            setEditor(undefined);
-            return;
-          }
-          if (openSlug !== undefined) {
-            setOpenSlug(undefined);
-            return;
-          }
-          onClose();
-        };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-      }, [confirming, editor, openSlug, onClose]);
+      // 编辑中：整块换成编辑器
+      if (editing !== undefined) {
+        return h(RoleEditor, {
+          t,
+          mode: editing.mode,
+          role: editing.role,
+          from: editing.from,
+          workspace: workspace || state.workspace,
+          onCancel: () => setEditing(undefined),
+          onSubmit: act,
+          onSaved: async () => {
+            setEditing(undefined);
+            await load(workspace);
+          },
+        });
+      }
 
-      const row = (role) => {
-        const isOpen = openSlug === role.slug;
+      const card = (role) => {
         const off = role.enabled !== true;
         const core = state.coreRoles.includes(role.slug);
         const confirm = confirming === role.slug;
+        const isCustom = role.builtin !== true;
         return h(
           'div',
-          {
-            key: role.slug,
-            className: 'dsh-teams-role-row',
-            'data-open': isOpen ? 'true' : undefined,
-            'data-off': off ? 'true' : undefined,
-          },
+          { key: `${role.builtin ? 'b' : 'c'}-${role.slug}`, className: 'dsh-teams-role-card', 'data-off': off ? 'true' : undefined },
           h('span', { className: 'dsh-teams-role-avatar', 'aria-hidden': 'true' }, role.emoji ?? '🤖'),
           h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-teams-role-main',
-              'aria-expanded': String(isOpen),
-              'aria-controls': `dsh-teams-role-${role.slug}`,
-              onClick: () => setOpenSlug(isOpen ? undefined : role.slug),
-            },
-            h('span', { className: 'dsh-teams-role-name' }, role.name),
+            'div',
+            { style: { minWidth: 0 } },
+            h('div', { className: 'dsh-teams-role-name', title: `${role.name}（${role.slug}）` }, role.name),
             h(
-              'span',
+              'div',
               { className: 'dsh-teams-role-meta' },
-              h('span', { className: 'dsh-teams-role-cat' }, role.category ?? '自定义'),
+              h('span', { className: 'dsh-teams-role-cat' }, role.category === 'builtin' ? t('role.catBuiltin') : role.category),
               h('span', { className: 'dsh-teams-role-state' }, off ? t('role.off') : t('role.on')),
               role.overrides === true ? h('span', { className: 'dsh-teams-role-cat' }, t('role.overrides')) : null,
               role.overridden === true ? h('span', { className: 'dsh-teams-role-cat' }, t('role.overridden')) : null,
-              role.triggers?.length > 0 ? h('span', { className: 'dsh-teams-role-state' }, `${role.triggers.length} ${t('role.triggers')}`) : null,
             ),
+            h('div', { className: 'dsh-teams-role-desc' }, role.description),
+            role.triggers?.length > 0
+              ? h(
+                  'div',
+                  { className: 'dsh-teams-role-triggers', style: { marginTop: '6px' } },
+                  ...role.triggers.map((word) => h('span', { key: word, className: 'dsh-teams-role-trigger' }, word)),
+                )
+              : null,
           ),
           h('button', {
             type: 'button',
@@ -1676,186 +1677,116 @@ window.__ModuleLoader__.load({
             'aria-checked': String(role.enabled === true),
             'aria-label': `${role.name} ${role.enabled === true ? t('role.disable') : t('role.enable')}`,
             title: core ? t('role.coreLocked') : undefined,
-            'data-core': core ? 'true' : undefined,
             disabled: busy,
-            onClick: () => toggle(role),
+            onClick: () => act({ action: 'toggle', role: role.slug, enabled: off }),
           }),
-          isOpen
+          confirm
             ? h(
                 'div',
-                { className: 'dsh-teams-role-detail', id: `dsh-teams-role-${role.slug}` },
-                h('div', { className: 'dsh-teams-role-desc' }, role.description),
-                role.triggers?.length > 0
-                  ? h('div', { className: 'dsh-teams-role-triggers' }, ...role.triggers.map((word) => h('span', { key: word, className: 'dsh-teams-role-trigger' }, word)))
-                  : null,
-                h('div', { className: 'dsh-teams-role-hint' }, role.builtin === true ? t('role.builtinHint') : t('role.customHint')),
-                confirm
-                  ? h(
-                      'div',
-                      { className: 'dsh-teams-confirm', role: 'alertdialog', 'aria-label': t('role.confirmDelete') },
-                      h('span', null, `${t('role.confirmDelete')}「${role.name}」？${t('role.irreversible')}`),
-                      h(
-                        'div',
-                        { className: 'dsh-teams-role-actions' },
-                        h('button', { type: 'button', className: 'dsh-teams-btn', autoFocus: true, onClick: () => setConfirming(undefined) }, t('role.cancel')),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'dsh-teams-btn dsh-teams-role-danger',
-                            disabled: busy,
-                            onClick: async () => {
-                              const done = await act({ action: 'delete', role: role.slug });
-                              if (done.ok) {
-                                setConfirming(undefined);
-                                setOpenSlug(undefined);
-                              }
-                            },
-                          },
-                          t('role.delete'),
-                        ),
-                      ),
-                    )
-                  : h(
-                      'div',
-                      { className: 'dsh-teams-role-actions' },
-                      h(
-                        'button',
-                        { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditor({ mode: 'view', role }) },
-                        t('role.view'),
-                      ),
-                      role.builtin === true
-                        ? h(
-                            'button',
-                            { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditor({ mode: 'create', from: role }) },
-                            t('role.copy'),
-                          )
-                        : h(
-                            'button',
-                            { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditor({ mode: 'edit', role }) },
-                            t('role.edit'),
-                          ),
-                      role.builtin === true
-                        ? null
-                        : h(
-                            'button',
-                            { type: 'button', className: 'dsh-teams-btn dsh-teams-role-danger', onClick: () => setConfirming(role.slug) },
-                            t('role.delete'),
-                          ),
-                    ),
+                { className: 'dsh-teams-role-actions' },
+                h('span', { className: 'dsh-teams-role-hint', style: { flex: 1, alignSelf: 'center' } }, `${t('role.confirmDelete')}「${role.name}」？`),
+                h('button', { type: 'button', className: 'dsh-teams-btn', autoFocus: true, onClick: () => setConfirming(undefined) }, t('role.cancel')),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-teams-btn dsh-teams-role-danger',
+                    disabled: busy,
+                    onClick: async () => {
+                      const done = await act({ action: 'delete', role: role.slug });
+                      if (done.ok) setConfirming(undefined);
+                    },
+                  },
+                  t('role.delete'),
+                ),
               )
-            : null,
+            : h(
+                'div',
+                { className: 'dsh-teams-role-actions' },
+                h('button', { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditing({ mode: 'view', role }) }, t('role.view')),
+                isCustom
+                  ? h('button', { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditing({ mode: 'edit', role }) }, t('role.edit'))
+                  : h('button', { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditing({ mode: 'create', from: role }) }, t('role.copy')),
+                isCustom
+                  ? h('button', { type: 'button', className: 'dsh-teams-btn dsh-teams-role-danger', onClick: () => setConfirming(role.slug) }, t('role.delete'))
+                  : null,
+              ),
         );
       };
 
       const list =
-        shown.length === 0
-          ? h(
-              'div',
-              { className: 'dsh-teams-role-empty' },
-              h('span', null, view === 'custom' ? t('role.emptyCustom') : t('role.emptyBuiltin')),
-              view === 'custom'
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'dsh-teams-btn',
-                      onClick: () => {
-                        setView('builtin');
-                        setOpenSlug(builtin[0]?.slug);
-                      },
-                    },
-                    t('role.copyFromBuiltin'),
-                  )
-                : null,
-            )
-          : h('div', { className: 'dsh-teams-role-list' }, ...shown.map((role) => row(role)));
+        state.status === 'loading'
+          ? h('div', { className: 'dsh-teams-empty' }, t('view.loading'))
+          : shown.length === 0
+            ? h(
+                'div',
+                { className: 'dsh-teams-role-empty' },
+                h('span', null, query.trim() !== '' ? t('role.noMatch') : view === 'custom' ? t('role.emptyCustom') : t('role.emptyBuiltin')),
+                view === 'custom' && query.trim() === ''
+                  ? h('button', { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditing({ mode: 'create' }) }, t('role.new'))
+                  : null,
+              )
+            : h('div', { className: 'dsh-teams-role-grid' }, ...shown.map(card));
 
       return h(
         'div',
-        { className: 'dsh-teams-role-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('role.title') },
+        null,
+        state.error === undefined ? null : h('div', { className: 'dsh-teams-error', role: 'alert' }, state.error),
         h(
           'div',
-          { className: 'dsh-teams-role-sheet-head' },
-          h(
-            'button',
-            { type: 'button', className: 'dsh-teams-btn', onClick: onClose, 'aria-label': t('role.close') },
-            '←',
-          ),
-          h('span', { className: 'dsh-teams-role-sheet-title' }, t('role.title')),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'dsh-teams-btn',
-              onClick: () => setEditor({ mode: 'create' }),
-              title: t('role.new'),
-            },
-            '+',
-          ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-teams-role-sheet-body' },
-          state.error === undefined ? null : h('div', { className: 'dsh-teams-error' }, state.error),
+          { className: 'dsh-teams-role-head' },
           h(
             'div',
             { className: 'dsh-teams-seg', role: 'tablist' },
             h(
               'button',
-              {
-                type: 'button',
-                role: 'tab',
-                'aria-selected': String(view === 'builtin'),
-                onClick: () => {
-                  setView('builtin');
-                  setConfirming(undefined);
-                },
-              },
+              { type: 'button', role: 'tab', 'aria-selected': String(view === 'builtin'), onClick: () => { setView('builtin'); setConfirming(undefined); } },
               `${t('role.builtin')} ${builtin.length}·${countEnabled(builtin)}`,
             ),
             h(
               'button',
-              {
-                type: 'button',
-                role: 'tab',
-                'aria-selected': String(view === 'custom'),
-                onClick: () => {
-                  setView('custom');
-                  setConfirming(undefined);
-                },
-              },
+              { type: 'button', role: 'tab', 'aria-selected': String(view === 'custom'), onClick: () => { setView('custom'); setConfirming(undefined); } },
               `${t('role.custom')} ${custom.length}·${countEnabled(custom)}`,
             ),
           ),
-          state.status === 'loading'
-            ? h('div', { className: 'dsh-teams-empty' }, t('view.loading'))
-            : list,
+          h('input', {
+            type: 'search',
+            className: 'dsh-teams-role-search',
+            placeholder: t('role.search'),
+            value: query,
+            onChange: (event) => setQuery(event.target.value),
+            'aria-label': t('role.search'),
+          }),
+          state.workspaces.length > 1
+            ? h(
+                'select',
+                {
+                  className: 'dsh-teams-role-search',
+                  style: { flex: 'none', width: 'auto', maxWidth: '240px' },
+                  value: workspace || state.workspace,
+                  onChange: (event) => setWorkspace(event.target.value),
+                  'aria-label': t('role.workspace'),
+                },
+                ...state.workspaces.map((item) => h('option', { key: item, value: item }, item)),
+              )
+            : state.workspace === ''
+              ? null
+              : h('span', { className: 'dsh-teams-role-ws', title: state.workspace }, t('role.workspaceOf').replace('{path}', state.workspace)),
+          h(
+            'button',
+            { type: 'button', className: 'dsh-teams-btn', onClick: () => setEditing({ mode: 'create' }) },
+            `+ ${t('role.new')}`,
+          ),
         ),
-        editor === undefined
-          ? null
-          : h(RoleEditor, {
-              t,
-              session: sessionId,
-              workspace,
-              mode: editor.mode,
-              role: editor.role,
-              from: editor.from,
-              onCancel: () => setEditor(undefined),
-              onSaved: async () => {
-                setEditor(undefined);
-                await load();
-              },
-              onCopy: (role) => setEditor({ mode: 'create', from: role }),
-              onSubmit: act,
-            }),
+        list,
       );
     }
 
-    /** 角色编辑器 / 查看器：新建、编辑、查看只读、从内置复制。 */
-    function RoleEditor({ t, session, workspace, mode, role, from, onCancel, onSaved, onSubmit, onCopy }) {
+    /** 角色编辑器（设置页内联，不浮层）。 */
+    function RoleEditor({ t, mode, role, from, workspace, onCancel, onSubmit, onSaved }) {
       const seed = mode === 'view' || mode === 'edit' ? role : undefined;
       const source = from ?? seed;
+      const readOnly = mode === 'view';
       const [form, setForm] = React.useState({
         role_id: mode === 'edit' ? seed?.slug ?? '' : '',
         name: mode === 'create' ? (source === undefined ? '' : `${source.name}（副本）`) : seed?.name ?? '',
@@ -1866,21 +1797,18 @@ window.__ModuleLoader__.load({
         tier: seed?.tier ?? 'medium',
         triggers: (seed?.triggers ?? []).join(', '),
         prompt: '',
-        read_budget: seed?.readBudget ?? 6,
-        output_budget: seed?.outputBudget ?? 900,
       });
       const [error, setError] = React.useState(undefined);
       const [busy, setBusy] = React.useState(false);
-      const readOnly = mode === 'view';
 
       // 契约正文不在列表接口里回传（太长），查看/复制时单独按 slug 取
       React.useEffect(() => {
-        if (source === undefined) return;
+        if (source === undefined) return undefined;
         let alive = true;
         (async () => {
           try {
             const response = await fetch(
-              `/plugins/dsh-teams/roles/body?session=${encodeURIComponent(session ?? '')}&workspace=${encodeURIComponent(workspace ?? '')}&role=${encodeURIComponent(source.slug)}`,
+              `/plugins/dsh-teams/roles/body?role=${encodeURIComponent(source.slug)}&workspace=${encodeURIComponent(workspace ?? '')}`,
               { credentials: 'same-origin' },
             );
             if (!response.ok) return;
@@ -1893,7 +1821,7 @@ window.__ModuleLoader__.load({
         return () => {
           alive = false;
         };
-      }, [source]);
+      }, [source, workspace]);
 
       const field = (label, control) => h('div', { className: 'dsh-teams-field' }, h('label', null, label), control);
       const input = (key, extra = {}) =>
@@ -1906,79 +1834,59 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'dsh-teams-role-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('role.editor') },
+        { className: 'dsh-teams-role-editor' },
         h(
           'div',
-          { className: 'dsh-teams-role-sheet-head' },
-          h('button', { type: 'button', className: 'dsh-teams-btn', onClick: onCancel, 'aria-label': t('role.cancel') }, '←'),
-          h('span', { className: 'dsh-teams-role-sheet-title' }, readOnly ? t('role.view') : mode === 'edit' ? t('role.edit') : t('role.new')),
+          { className: 'dsh-teams-role-head' },
+          h('span', { className: 'dsh-teams-role-sheet-title', style: { flex: 1 } }, readOnly ? `${t('role.view')}：${role?.name ?? ''}` : mode === 'edit' ? `${t('role.edit')}：${role?.name ?? ''}` : t('role.new')),
+          h('button', { type: 'button', className: 'dsh-teams-btn', onClick: onCancel }, t('role.back')),
         ),
+        error === undefined ? null : h('div', { className: 'dsh-teams-error', role: 'alert' }, error),
+        field(t('role.id'), input('role_id', { placeholder: 'db-tuning' })),
+        field(t('role.name'), input('name')),
+        field(t('role.category'), input('category', { placeholder: t('role.categoryHint') })),
+        field(t('role.emoji'), input('emoji')),
+        field(t('role.triggersLabel'), input('triggers', { placeholder: 'python, pytest, django' })),
         h(
           'div',
-          { className: 'dsh-teams-role-sheet-body' },
-          error === undefined ? null : h('div', { className: 'dsh-teams-error' }, error),
-          h(
-            'div',
-            { className: 'dsh-teams-role-form' },
-            field(t('role.id'), input('role_id', { placeholder: 'db-tuning' })),
-            field(t('role.name'), input('name')),
-            field(t('role.category'), input('category', { placeholder: '数据 / 前端 / 文档' })),
-            field(t('role.emoji'), input('emoji')),
-            field(t('role.triggersLabel'), input('triggers', { placeholder: 'python, pytest, django' })),
-            field(
-              t('role.permissions'),
-              h(
-                'select',
-                {
-                  value: form.permissions,
-                  disabled: readOnly,
-                  onChange: (event) => setForm((current) => ({ ...current, permissions: event.target.value })),
-                },
-                ...['readonly', 'readwrite', 'execute'].map((value) => h('option', { key: value, value }, value)),
-              ),
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } },
+          field(
+            t('role.permissions'),
+            h(
+              'select',
+              { value: form.permissions, disabled: readOnly, onChange: (event) => setForm((current) => ({ ...current, permissions: event.target.value })) },
+              ...['readonly', 'readwrite', 'execute'].map((value) => h('option', { key: value, value }, value)),
             ),
-            field(
-              t('role.tier'),
-              h(
-                'select',
-                {
-                  value: form.tier,
-                  disabled: readOnly,
-                  onChange: (event) => setForm((current) => ({ ...current, tier: event.target.value })),
-                },
-                ...['heavy', 'medium', 'light', 'infrastructure'].map((value) => h('option', { key: value, value }, value)),
-              ),
-            ),
-            field(t('role.description'), input('description')),
-            field(
-              t('role.prompt'),
-              h('textarea', {
-                value: form.prompt,
-                disabled: readOnly,
-                onChange: (event) => setForm((current) => ({ ...current, prompt: event.target.value })),
-              }),
+          ),
+          field(
+            t('role.tier'),
+            h(
+              'select',
+              { value: form.tier, disabled: readOnly, onChange: (event) => setForm((current) => ({ ...current, tier: event.target.value })) },
+              ...['heavy', 'medium', 'light', 'infrastructure'].map((value) => h('option', { key: value, value }, value)),
             ),
           ),
         ),
+        field(t('role.description'), input('description')),
+        field(
+          t('role.prompt'),
+          h('textarea', {
+            value: form.prompt,
+            disabled: readOnly,
+            onChange: (event) => setForm((current) => ({ ...current, prompt: event.target.value })),
+          }),
+        ),
         h(
           'div',
-          { className: 'dsh-teams-role-form-foot' },
+          { className: 'dsh-teams-role-editor-foot' },
           h('button', { type: 'button', className: 'dsh-teams-btn', onClick: onCancel }, readOnly ? t('role.close') : t('role.cancel')),
           readOnly
-            ? h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dsh-teams-btn',
-                  onClick: () => (typeof onCopy === 'function' ? onCopy(role) : onCancel()),
-                },
-                t('role.copy'),
-              )
+            ? null
             : h(
                 'button',
                 {
                   type: 'button',
-                  className: 'dsh-teams-btn',
+                  className: 'dsh-teams-set-primary',
                   disabled: busy,
                   onClick: async () => {
                     setBusy(true);
@@ -1994,8 +1902,6 @@ window.__ModuleLoader__.load({
                       tier: form.tier,
                       triggers: form.triggers,
                       prompt: form.prompt,
-                      read_budget: form.read_budget,
-                      output_budget: form.output_budget,
                     });
                     setBusy(false);
                     if (result.ok === true) onSaved();
@@ -2489,6 +2395,8 @@ window.__ModuleLoader__.load({
       const [saved, setSaved] = React.useState(false);
       const [writeFailed, setWriteFailed] = React.useState(false);
       const [collapsed, setCollapsed] = React.useState({});
+      // 设置页两个页签：配置项（表单）/ 角色（管理）
+      const [tab, setTab] = React.useState('config');
       const cardRef = React.useRef(null);
 
       React.useEffect(() => {
@@ -2822,12 +2730,27 @@ window.__ModuleLoader__.load({
           { className: 'dsh-teams-set-head' },
           h('span', { className: 'dsh-teams-set-label' }, t('set.title')),
           h(
+            'div',
+            { className: 'dsh-teams-set-tabs', role: 'tablist', 'aria-label': t('set.tabs') },
+            h(
+              'button',
+              { type: 'button', role: 'tab', 'aria-selected': String(tab === 'config'), onClick: () => setTab('config') },
+              t('set.tabConfig'),
+            ),
+            h(
+              'button',
+              { type: 'button', role: 'tab', 'aria-selected': String(tab === 'roles'), onClick: () => setTab('roles') },
+              t('set.tabRoles'),
+            ),
+          ),
+          h(
             'span',
             { className: 'dsh-teams-chip dsh-teams-set-chip' },
-            t('set.covered').replace('{n}', String(overriddenCount)),
+            // 角色页签下"已覆盖 N 项"指的是配置项，会误导；角色页不显示它
+            tab === 'roles' ? '' : t('set.covered').replace('{n}', String(overriddenCount)),
           ),
         ),
-        ...body,
+        ...(tab === 'roles' ? [h(RoleManager, { key: 'roles', t })] : body),
       );
     }
 
