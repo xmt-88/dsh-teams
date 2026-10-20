@@ -986,3 +986,102 @@ test('派发：任务的角色不存在时干净失败，不得热循环（TDZ �
     assert.ok(!events.includes('Cannot access'), '不应出现 TDZ ReferenceError');
   });
 });
+
+test('零进展护栏：派发期异常必须把任务落成失败，不得无限热循环', async () => {
+  await withDir(async (dir) => {
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              // 故意让派发期炸：返回值缺 result
+              startActivation: async () => {
+                throw new Error('模拟派发期异常');
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'zg', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+
+    let team;
+    for (let i = 0; i < 120; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'zg');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.notEqual(team.phase, 'running', '不得停在 running');
+    const events = await readFile(join(dir, '.dsh-teams', 'events.jsonl'), 'utf8');
+    const count = events.split('\n').filter((line) => line.includes('派发异常') || line.includes('派发失败')).length;
+    assert.ok(count < 20, `事件流不得被刷爆（实际 ${count} 条）`);
+  });
+});
+
+test('停止后续跑：真实 abort 路径下任务留 pending，再 teams_run 能跑完', async () => {
+  await withDir(async (dir) => {
+    let round = 1;
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                const mine = round;
+                return {
+                  childId: `c${mine}`,
+                  result: new Promise((resolve) => {
+                    if (mine !== 1) {
+                      setTimeout(() => resolve({ output: [{ type: 'text', text: '证据 a.js:1 退出码 0\n\nVERDICT: PASS' }], stopReason: 'completed' }), 20);
+                      return;
+                    }
+                    // 第一轮：只有收到 abort 才结束（模拟被用户停止）
+                    spec.signal?.addEventListener('abort', () => resolve({ output: [], stopReason: 'aborted' }));
+                  }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'sr', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    stopRun(stateRootOf(dir, CONFIG.stateDir), 'sr');
+    let team;
+    for (let i = 0; i < 100; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'sr');
+      if (team?.phase === 'halted') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'halted');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'sr');
+    assert.equal(
+      graph.tasks.every((task) => task.status === 'pending' || task.status === 'done'),
+      true,
+      '被停止的任务必须留 pending（判 failed 会让续跑断掉）',
+    );
+
+    round = 2;
+    const again = await startTeamRun(base);
+    assert.equal(again.started, true, again.reason ?? '应能续跑');
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'sr');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '续跑应跑完');
+  });
+});
