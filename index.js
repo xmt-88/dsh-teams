@@ -97,6 +97,10 @@ export const Config = z.object({
       probeMs: z.natural().default(10_000).volatile(),
       idleGraceMs: z.natural().default(5_000).volatile(),
       silenceLimitMs: z.natural().default(600_000).volatile(),
+      // 动态停滞判定的两道闸：缺了这两个键，apply 期视图就取不到值，
+      // 用户怎么配都是默认的 900000 / 4（审计 R6-02）
+      stallFloorMs: z.natural().default(900_000).volatile(),
+      stallFactor: z.natural().default(4).volatile(),
     })
     .default({}),
   /** 质量门开关。 */
@@ -1107,6 +1111,14 @@ export function apply(ctx, config) {
       },
       get silenceLimitMs() {
         return read(config?.watch?.silenceLimitMs, 600_000);
+      },
+      // ⚠️ 这两个以前只存在于 lib/config.js 的读取列表里，schema 与 apply 视图都没声明，
+      // 于是 watchOverrides() 永远取不到 → 动态判死的阈值实际不可配（审计 R6-02）。
+      get stallFloorMs() {
+        return read(config?.watch?.stallFloorMs, 900_000);
+      },
+      get stallFactor() {
+        return read(config?.watch?.stallFactor, 4);
       },
     },
     gates: {

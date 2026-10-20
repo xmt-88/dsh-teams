@@ -279,6 +279,11 @@ test('时间字段带对单位：角色超时标「秒」，看门狗标「毫�
     assert.equal(field.unit, 'set.unitSeconds', `timeouts.${field.path.join('.')} 应标「秒」`);
   }
   for (const field of byId.get('watch').fields) {
+    // stallFactor 是**倍数**不是时长，不能标毫秒
+    if (field.path.join('.') === 'watch.stallFactor') {
+      assert.equal(field.unit, undefined, 'watch.stallFactor 是倍数，不该带时间单位');
+      continue;
+    }
     assert.equal(field.unit, 'set.unitMs', `watch.${field.path.join('.')} 应标「毫秒」`);
   }
 
