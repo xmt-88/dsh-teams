@@ -92,6 +92,30 @@
 `stopped` 只有两个来源（stopRun / 僵尸接管，都先置 cancelled）、blocked 有 `by` 事件、
 workspace 精确匹配（正确 200 / 错误 400）、无 TDZ 与无界循环残留。
 
+## 第六轮（团队流水线跑出的六维审计）
+
+见 [AUDIT-R6.md](./AUDIT-R6.md)：9 个任务的完整路径（review/security/test/verify 四门 PASS），
+16 条结论，**修 14 / 不修 1 / 记入已知限制 1**。
+
+| ID | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| R6-07 | high | `ui.locale=en` 把路由词表缩成纯英文，中文安全任务风险判 0 → 落 `fast`（四道门全跳过） | 语言只影响界面文案，词池永远中英合并 |
+| R6-09 | high | 质量门驳回改写 `task.deps` → 已批准图指纹失效 → `teams_retry` 报"已续跑"但启动不了 | 指纹改用 `plannedDeps`（计划期快照） |
+| R6-08 | high | 进程重启后遗留 `running` 永久卡死（run 判 failed、retry 不认、stop 无循环） | 启动前复位为 `pending`（epoch+1） |
+| R6-15 | high | 安全门依赖 architect，在实现之前跑，PASS 不覆盖本次变更 | 依赖改为 `executor` |
+| R6-13 | medium | `/state` 每次快照全量读事件文件（2.9MB 取 80 条，放大 ×150，运行中 145MB/分钟） | 尾部倒读，10.68ms → 1ms |
+| R6-02 | high | `stallFloorMs`/`stallFactor` 被 apply 期视图截断，配置永不生效 | schema + apply 视图 + 设置卡片三处补齐 |
+| R6-05 | medium | 角色停用只在 plan 阶段生效；`resolveRole` 回退还能找到停用角色 | `runLoop` 带 `disabled`；回退只看可用集合 |
+| R6-11 | medium | 被拒的 `teams_plan` 会把旧图的 `purpose` 改掉 | 只在真正生成新图时更新 |
+| R6-06 | medium | 长批次（>1h）会被第二次 `teams_run` 误判僵尸并接管 | 独立心跳定时器 |
+| R6-10 | medium | 归档失败被静默吞掉，旧图立即被覆盖 | 归档成为重建前置条件 |
+| R6-12 | low | 启动期写盘失败会漏锁 1 小时 | 失败时撤销占位 |
+| R6-01 | low | `resolveUi` 仍返回已"删除"的 `openTabOnPlan` | 彻底删除 |
+| R6-03 | low | `route().ambiguous` 只算不用 | 进决策记录与返回值 |
+| R6-04 | low | `summarize.ready` 恒 0、`skipped` 无写入者、`artifacts`/`stepId` 只写不读 | ready 改真实计算，删死字段 |
+
+**修完后**：235 条测试全绿；`docs/audit-r6/run-all.mjs` 的 5 个探针**全部 NOT-REPRODUCED**。
+
 ## 已知限制（记录在案，非缺陷）
 
 1. **3 个内置角色未被任何路径派发**（`document-specialist` / `explore` / `orchestrator`）。
