@@ -934,3 +934,55 @@ test('停止：真正打断在跑的子代理（不是等它自己跑完）', as
     assert.ok(Date.now() - started < 3000, '停止应在一两秒内完成');
   });
 });
+
+test('派发：任务的角色不存在时干净失败，不得热循环（TDZ 回归）', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async () => {
+                calls.push('x');
+                return {
+                  childId: 'c',
+                  result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'ghost', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+
+    // 把任务图里的角色改成不存在的（模拟"自定义角色被删/改名之后再跑"）
+    const { mutateTasks } = await import('../lib/state.js');
+    await mutateTasks(join(dir, '.dsh-teams'), 'ghost', (graph) => {
+      for (const task of graph.tasks) task.role = 'ghost-role';
+      return graph;
+    });
+    // 图变了要重新批准
+    await approveTeam(base);
+
+    const started = await startTeamRun(base);
+    assert.equal(started.started, true);
+
+    // 关键：必须在短时间内收口，且不能把事件流刷爆
+    let team;
+    for (let i = 0; i < 100; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'ghost');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'failed', '角色缺失应干净失败，而不是一直 running');
+    const events = await readFile(join(dir, '.dsh-teams', 'events.jsonl'), 'utf8');
+    const errorLines = events.split('\n').filter((line) => line.includes('派发异常'));
+    assert.ok(errorLines.length < 5, `不得热循环刷事件（实际 ${errorLines.length} 条"派发异常"）`);
+    assert.ok(!events.includes('Cannot access'), '不应出现 TDZ ReferenceError');
+  });
+});
