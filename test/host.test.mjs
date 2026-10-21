@@ -139,12 +139,14 @@ test('插件注册了工具、提示段与状态路由', async () => {
     assert.deepEqual(paths, [
       '/plugins/dsh-teams/asset',
       '/plugins/dsh-teams/state',
+      '/plugins/dsh-teams/stop',
       '/plugins/dsh-teams/roles/body',
       '/plugins/dsh-teams/roles',
     ]);
     for (const route of ctx.__routes) assert.equal(route.kind, 'exact');
     assert.ok(paths.some((path) => path.endsWith('/state')), '应有团队快照路由');
     assert.ok(paths.some((path) => path.endsWith('/asset')), '应有精灵图资源路由');
+    assert.ok(paths.some((path) => path.endsWith('/stop')), '应有停止路由（面板唯一的写操作）');
     assert.ok(paths.some((path) => path.endsWith('/roles')), '应有角色库路由（GET/POST）');
     assert.ok(paths.some((path) => path.endsWith('/roles/body')), '应能取角色契约正文');
   });

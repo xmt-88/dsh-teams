@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { authenticatedWebRoutes, registerStateRoutes, buildSnapshot } from '../lib/web-routes.js';
-import { ensureStateDirs, ensureTeam, mutateTeam, appendEvent, writeTasks, appendRunRecord } from '../lib/state.js';
+import { ensureStateDirs, ensureTeam, mutateTeam, appendEvent, writeTasks, appendRunRecord, readEvents } from '../lib/state.js';
 
 /** 最小 ServerResponse 替身：记录状态码、头与正文。 */
 function fakeResponse() {
@@ -42,8 +42,24 @@ function fakeRequest(url, method = 'GET') {
   return { url, method, headers: {} };
 }
 
+/** 带 JSON 请求体的 IncomingMessage 替身（路由用 on('data'/'end') 读体）。 */
+function fakeJsonRequest(url, body, method = 'POST') {
+  const payload = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+  return {
+    url,
+    method,
+    headers: {},
+    destroy() {},
+    on(event, handler) {
+      if (event === 'data') handler(payload);
+      if (event === 'end') handler();
+      return this;
+    },
+  };
+}
+
 /** 注册路由并取回它（便于直接调用 handler）。 */
-function captureRoutes(config, connection, workspaceRegistry) {
+function captureRoutes(config, connection, workspaceRegistry, stopRun) {
   const registered = [];
   const rawServer = {
     register(route) {
@@ -52,7 +68,7 @@ function captureRoutes(config, connection, workspaceRegistry) {
     },
   };
   const webServer = authenticatedWebRoutes(rawServer, () => connection());
-  registerStateRoutes({ webServer, config, workspaceRegistry });
+  registerStateRoutes({ webServer, config, workspaceRegistry, stopRun });
   return registered;
 }
 
@@ -62,6 +78,14 @@ function captureRoute(config, connection, workspaceRegistry) {
   const state = routes.find((route) => route.path === '/plugins/dsh-teams/state');
   assert.ok(state, '应注册状态路由');
   return state;
+}
+
+/** 取停止路由。 */
+function captureStopRoute(config, connection, workspaceRegistry, stopRun) {
+  const routes = captureRoutes(config, connection, workspaceRegistry, stopRun);
+  const stop = routes.find((route) => route.path === '/plugins/dsh-teams/stop');
+  assert.ok(stop, '应注册停止路由');
+  return stop;
 }
 
 async function withWorkspace(run) {
@@ -529,5 +553,156 @@ test('快照：不得留 undefined 自有属性（否则整份输出会被宿主
     // 无损性：JSON 往返后必须逐字节一致（深比较在宿主里也走这条路径）
     const encoded = JSON.stringify(snapshot);
     assert.equal(JSON.stringify(JSON.parse(encoded)), encoded, '快照必须无损通过 JSON 往返');
+  });
+});
+
+/* ================================================================== *
+ * 停止路由（POST /plugins/dsh-teams/stop）
+ *
+ * 这是面板唯一的写操作：鉴权必须与读路由同款，且只有"确认"才真的落到 stopRun。
+ * ================================================================== */
+
+test('停止路由：POST 调 stopRun 并落 gate 审计事件（有循环 / 没循环都幂等）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-stop';
+    await seedTeam(stateRoot, sessionId, dir);
+
+    let running = true;
+    const calls = [];
+    const route = captureStopRoute(
+      { stateDir: '.dsh-teams' },
+      () => ({ requestRejection: () => undefined }),
+      () => ({ list: () => [{ path: dir }] }),
+      (root, session) => {
+        calls.push({ root, session });
+        return running;
+      },
+    );
+
+    const ok = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', { session: sessionId }), ok);
+
+    assert.equal(ok.record.status, 200);
+    assert.equal(ok.record.headers['cache-control'], 'no-store', '写结果不得被缓存');
+    assert.deepEqual(JSON.parse(ok.record.body), { stopped: true, captainSessionId: sessionId });
+    assert.equal(calls.length, 1, '应调用一次 stopRun');
+    assert.equal(calls[0].root, stateRoot, '应把定位到的状态根传给 stopRun');
+    assert.equal(calls[0].session, sessionId, '应把队长会话 id 传给 stopRun');
+
+    let events = await readEvents(stateRoot, 20);
+    let audit = events.filter((event) => event.type === 'gate' && event.data?.action === 'stop');
+    assert.equal(audit.length, 1, '停止要留审计事件');
+    assert.equal(audit[0].team, sessionId);
+    assert.equal(audit[0].data.stopped, true);
+    assert.equal(audit[0].data.source, 'panel', '要能区分面板停止与工具停止');
+
+    // 循环已经结束：stopped=false 是幂等结果，不是错误；审计照记
+    running = false;
+    const idle = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', { session: sessionId }), idle);
+    assert.equal(idle.record.status, 200);
+    assert.deepEqual(JSON.parse(idle.record.body), { stopped: false, captainSessionId: sessionId });
+
+    events = await readEvents(stateRoot, 20);
+    audit = events.filter((event) => event.type === 'gate' && event.data?.action === 'stop');
+    assert.equal(audit.length, 2);
+    assert.equal(audit[1].data.stopped, false);
+  });
+});
+
+test('停止路由：从未见过这个会话 → 200 stopped=false，且不碰任何循环', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const calls = [];
+    const route = captureStopRoute(
+      { stateDir: '.dsh-teams' },
+      () => ({ requestRejection: () => undefined }),
+      () => ({ list: () => [{ path: dir }] }),
+      (...args) => {
+        calls.push(args);
+        return true;
+      },
+    );
+
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', { session: 'session-nobody' }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.deepEqual(JSON.parse(res.record.body), { stopped: false });
+    assert.equal(calls.length, 0, '定位不到团队时不得调用 stopRun');
+  });
+});
+
+test('停止路由：400（坏 JSON / 缺 session）与 405（非 POST）', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const route = captureStopRoute(
+      { stateDir: '.dsh-teams' },
+      () => ({ requestRejection: () => undefined }),
+      () => ({ list: () => [{ path: dir }] }),
+      () => true,
+    );
+
+    const badJson = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', '{not json'), badJson);
+    assert.equal(badJson.record.status, 400);
+    assert.match(badJson.record.body, /invalid json body/);
+
+    for (const body of [{}, { session: '' }, { session: '   ' }, { session: 42 }]) {
+      const missing = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', body), missing);
+      assert.equal(missing.record.status, 400, `缺 session 应 400：${JSON.stringify(body)}`);
+      assert.match(missing.record.body, /missing session parameter/);
+    }
+
+    const get = fakeResponse();
+    await route.handler(fakeRequest('/plugins/dsh-teams/stop', 'GET'), get);
+    assert.equal(get.record.status, 405);
+  });
+});
+
+test('停止路由：鉴权与读路由同款（503/401/403），被拒时绝不执行 stopRun', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const gates = [
+      [() => undefined, 503, /authentication unavailable/],
+      [() => ({ requestRejection: () => 401 }), 401, /unauthorized/],
+      [() => ({ requestRejection: () => 403 }), 403, /forbidden/],
+    ];
+    for (const [connection, status, pattern] of gates) {
+      const calls = [];
+      const route = captureStopRoute(
+        { stateDir: '.dsh-teams' },
+        connection,
+        () => ({ list: () => [{ path: dir }] }),
+        (...args) => {
+          calls.push(args);
+          return true;
+        },
+      );
+      const res = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', { session: 'session-any' }), res);
+
+      assert.equal(res.record.status, status, `应返回 ${status}`);
+      assert.match(res.record.body, pattern);
+      assert.equal(calls.length, 0, '被拒请求不得执行 stopRun');
+    }
+  });
+});
+
+test('停止路由：不注入实现时走真正的 stopRun（没有循环 → stopped=false，不抛错）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-real-stop';
+    await seedTeam(stateRoot, sessionId, dir);
+
+    // 不传 stopRun：验证默认绑定到真正的调度器函数，而不是一个永远返回 undefined 的占位
+    const routes = captureRoutes(
+      { stateDir: '.dsh-teams' },
+      () => ({ requestRejection: () => undefined }),
+      () => ({ list: () => [{ path: dir }] }),
+    );
+    const route = routes.find((item) => item.path === '/plugins/dsh-teams/stop');
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/stop', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.deepEqual(JSON.parse(res.record.body), { stopped: false, captainSessionId: sessionId });
   });
 });

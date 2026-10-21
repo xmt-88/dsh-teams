@@ -1346,3 +1346,413 @@ test('设置页：角色页签下不显示「已覆盖」徽标（那是配置�
   assert.equal(chips().length, 0, '角色页不渲染该徽标');
 });
 ;
+
+/* ================================================================== *
+ * E. 团队面板：打开子会话 + 停止确认框
+ *
+ * 面板组件都在 factory 作用域里（不导出），所以从槽位注册处取回组件函数，
+ * 用与线上相同的 React.createElement 树逐层挂载、真实触发 onClick —— 不是 grep 源码。
+ * ================================================================== */
+
+/** 团队快照替身：一轮运行 + 一个忙碌成员 + 一张带子会话的任务卡。 */
+const PANEL_TEAM = {
+  captainSessionId: 'captain-1',
+  phase: 'running',
+  runs: [
+    {
+      runId: 'run-current',
+      current: true,
+      subject: '补两个功能',
+      pathLabel: '标准',
+      phase: 'running',
+      steps: [
+        { id: 't1', role: 'executor', roleName: '开发执行者', status: 'running', deps: [], childId: 'child-flow' },
+        { id: 't2', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['t1'] },
+      ],
+    },
+  ],
+  members: [
+    { name: 'executor', role: 'executor', roleName: '开发执行者', emoji: '🔨', status: 'working', sessionId: 'child-a' },
+  ],
+  tasks: [
+    {
+      id: 't1',
+      subject: '实现',
+      role: 'executor',
+      roleName: '开发执行者',
+      status: 'running',
+      deps: [],
+      attempts: [{ attempt: 1 }],
+      childId: 'child-b',
+    },
+  ],
+};
+
+/** 只读团队 store 替身（面板渲染用；轮询在 useEffect 里，替身不跑定时器）。 */
+function fakeTeamStore(team) {
+  return {
+    getSnapshot: () => team,
+    getError: () => undefined,
+    isLoading: () => false,
+    subscribe: () => () => {},
+    refresh: () => {},
+    intervalFor: () => 60_000,
+  };
+}
+
+/** 挂载团队页：渲染真实 TeamWorkspace，但换成只读快照替身。 */
+async function mountTeamWorkspace({ uiWorkspace = undefined, team = PANEL_TEAM } = {}) {
+  const { module, React } = await pluginModule();
+  const ctx = fakeClientContext({ withSidebarRightTabs: true });
+  if (uiWorkspace !== undefined) ctx.__services.set('uiWorkspace', uiWorkspace);
+  module.apply(ctx);
+  ctx.__declareSlot('sidebar.right.pane.tab');
+  const pane = ctx.__log.registers.find((item) => item.options.name === 'sidebar.right.pane.tab');
+  assert.ok(pane, '团队页应注册到右栏槽位');
+  const element = pane.component({ session: { id: 'captain-1' } });
+  const workspace = React.mount(element.type, { ...element.props, store: fakeTeamStore(team) });
+  return { ctx, React, workspace };
+}
+
+/** 按组件函数名找节点（子组件要手动展开才会渲染）。 */
+function componentNamed(tree, name) {
+  return collect(tree, (node) => typeof node.type === 'function' && node.type.name === name)[0];
+}
+
+/** 无 hooks 的组件直接调用即可拿到渲染树（不会抢走 fakeReact 的 redraw）。 */
+function renderDirect(node) {
+  return node.type(node.props);
+}
+
+/** 点页签（测试里的 t() 返回 key 本身）。 */
+function selectTab(workspace, key) {
+  const tab = collect(
+    workspace.tree,
+    (node) => node.type === 'button' && node.props?.className === 'dsh-teams-tab' && (node.children ?? []).includes(key),
+  )[0];
+  assert.ok(tab, `应有 ${key} 页签`);
+  tab.props.onClick();
+}
+
+/** 挂载运行列表（可覆盖 onStop 等注入项）。 */
+function mountRunsView(React, workspace, overrides = {}) {
+  const node = componentNamed(workspace.tree, 'RunsView');
+  assert.ok(node, '应渲染运行列表');
+  return React.mount(node.type, { ...node.props, ...overrides });
+}
+
+/** 挂载一轮运行（可替换 run 造历史轮）。 */
+function mountRunItem(React, runsBox, runOverride) {
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  assert.ok(node, '应渲染运行轮');
+  return React.mount(node.type, runOverride === undefined ? node.props : { ...node.props, run: runOverride });
+}
+
+test('面板：成员行与任务标题行可打开子会话（键盘也可），流程图卡片同样可点', async () => {
+  const opened = [];
+  const { React, workspace } = await mountTeamWorkspace({
+    uiWorkspace: { openSession: (id) => opened.push(id) },
+  });
+
+  // ① 成员行：整行 role=button + tabIndex，点击 / Enter 都打开该成员的子会话
+  selectTab(workspace, 'view.members');
+  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
+  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
+  assert.ok(memberRow, '应渲染成员行');
+  assert.equal(memberRow.props.role, 'button', '可点成员行要有 button 语义');
+  assert.equal(memberRow.props.tabIndex, 0, '键盘可聚焦');
+  assert.equal(memberRow.props['aria-label'], '开发执行者，member.openSession');
+  assert.equal(memberRow.props.title, 'member.openSession');
+  memberRow.props.onClick();
+  assert.deepEqual(opened, ['child-a'], '点成员行应打开 member.sessionId');
+  const enter = { key: 'Enter', preventDefault() { this.defaultPrevented = true; } };
+  memberRow.props.onKeyDown(enter);
+  assert.equal(enter.defaultPrevented, true, 'Enter 要拦掉默认行为');
+  assert.deepEqual(opened, ['child-a', 'child-a'], 'Enter 也能打开');
+
+  // ② 任务卡：标题行可点（下半部分 details 仍是独立交互），点击打开 task.childId
+  selectTab(workspace, 'view.tasks');
+  const tasksTree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
+  const taskHead = collect(tasksTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-task-head'))[0];
+  assert.ok(taskHead, '任务卡应有可点的标题行');
+  assert.equal(taskHead.props.role, 'button');
+  assert.equal(taskHead.props.title, 'task.openSession');
+  taskHead.props.onClick();
+  assert.equal(opened.at(-1), 'child-b', '点任务标题行应打开 task.childId');
+  const space = { key: ' ', preventDefault() { this.defaultPrevented = true; } };
+  taskHead.props.onKeyDown(space);
+  assert.equal(space.defaultPrevented, true, 'Space 要拦掉滚动/折叠');
+
+  // ③ 流程图卡片：同一个子会话入口
+  selectTab(workspace, 'flow.tab');
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox);
+  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
+  const cardTree = renderDirect(componentNamed(flowTree, 'FlowCard'));
+  assert.equal(cardTree.props.role, 'button', '流程图卡片可点');
+  cardTree.props.onClick();
+  assert.equal(opened.at(-1), 'child-flow');
+});
+
+test('面板降级：取不到 uiWorkspace 时成员行/任务行/流程卡禁用并给 title，点击不抛错', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+
+  selectTab(workspace, 'view.members');
+  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
+  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
+  assert.equal(memberRow.props.role, undefined, '没有服务就不该有 button 语义');
+  assert.equal(memberRow.props.onClick, undefined, '没有服务就不挂点击处理');
+  assert.equal(memberRow.props['aria-disabled'], 'true');
+  assert.equal(memberRow.props.title, 'session.unavailable', '要说明为什么点不了');
+  assert.doesNotThrow(() => memberRow.props.onClick?.());
+
+  selectTab(workspace, 'view.tasks');
+  const tasksTree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
+  const taskHead = collect(tasksTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-task-head'))[0];
+  assert.equal(taskHead.props.role, undefined);
+  assert.equal(taskHead.props.onClick, undefined);
+  assert.equal(taskHead.props['aria-disabled'], 'true');
+  assert.equal(taskHead.props.title, 'session.unavailable');
+  assert.doesNotThrow(() => taskHead.props.onClick?.());
+
+  selectTab(workspace, 'flow.tab');
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox);
+  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
+  const cardTree = renderDirect(componentNamed(flowTree, 'FlowCard'));
+  assert.equal(cardTree.props.role, undefined);
+  assert.equal(cardTree.props.onClick, undefined);
+  assert.equal(cardTree.props['aria-disabled'], 'true');
+  assert.equal(cardTree.props.title, 'session.unavailable');
+});
+
+test('停止入口只在正在跑的当前轮出现（历史轮与已收口轮都没有）', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, { onStop: async () => ({ ok: true, stopped: true }) });
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const historical = React.mount(node.type, { ...node.props, run: { ...node.props.run, runId: 'run-old', current: false } });
+  const summary = collect(historical.tree, (item) => item.type === 'summary')[0];
+  assert.equal(summary.props['data-has-stop'], undefined, '非当前轮不渲染停止入口');
+  assert.equal(
+    (summary.children ?? []).some((item) => String(item?.props?.className ?? '').includes('dsh-teams-run-stop')),
+    false,
+  );
+
+  // 最新一轮已收口（done/failed/halted）时 current 仍为 true，但不能显示「停止」
+  for (const phase of ['done', 'failed', 'halted']) {
+    const settled = React.mount(node.type, {
+      ...node.props,
+      run: { ...node.props.run, runId: `run-${phase}`, current: true, phase },
+    });
+    const settledSummary = collect(settled.tree, (item) => item.type === 'summary')[0];
+    assert.equal(settledSummary.props['data-has-stop'], undefined, `${phase} 轮不应有停止入口`);
+    assert.equal(
+      (settledSummary.children ?? []).some((item) => String(item?.props?.className ?? '').includes('dsh-teams-run-stop')),
+      false,
+    );
+  }
+});
+
+test('停止：按钮在运行行标题旁，确认框显示未完成任务与忙碌成员；取消不改状态，确认后才请求', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\/plugins\/dsh-teams\/stop/, '应 POST 停止路由');
+  assert.match(source, /method: 'POST'/, '停止必须是 POST');
+  assert.match(source, /JSON\.stringify\(\{ session: sessionId \}\)/, '应把会话 id 放进请求体');
+
+  let stopImpl = async () => ({ ok: true, stopped: true });
+  const stopCalls = [];
+  const refreshes = [];
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, {
+    onStop: () => {
+      stopCalls.push(1);
+      return stopImpl();
+    },
+    onRefresh: () => refreshes.push(1),
+  });
+  const runBox = mountRunItem(React, runsBox);
+
+  // ① 停止按钮位于折叠行（summary）里、标题旁
+  const summary = collect(runBox.tree, (node) => node.type === 'summary')[0];
+  const stopButton = (summary.children ?? []).find((node) => String(node.props?.className ?? '').includes('dsh-teams-run-stop'));
+  assert.ok(stopButton, '运行行标题旁应有停止按钮（不占输入区）');
+  assert.equal(summary.props['data-has-stop'], 'true');
+  assert.equal(stopButton.props.type, 'button', '必须是真按钮');
+  assert.equal(stopButton.props['aria-label'], 'stop.button：补两个功能');
+
+  // ② 点停止：拦掉 summary 的折叠默认行为，展开行内确认条（计数来自快照）
+  assert.equal(collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length, 0);
+  const click = {
+    defaultPrevented: false,
+    propagationStopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+  };
+  stopButton.props.onClick(click);
+  assert.equal(click.defaultPrevented, true, '必须拦掉 summary 的默认折叠');
+  assert.equal(click.propagationStopped, true, '不能冒泡给 details');
+  assert.equal(stopCalls.length, 0, '打开确认框不发请求');
+
+  const confirmBar = collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm'))[0];
+  assert.ok(confirmBar, '应展开确认条');
+  assert.equal(confirmBar.props.role, 'group');
+  const confirmTexts = (confirmBar.children ?? []).flatMap((child) => child?.children ?? []).filter((item) => typeof item === 'string');
+  assert.ok(confirmTexts.includes('stop.confirmTitle'), '确认框要有标题');
+  assert.ok(
+    confirmTexts.includes('stop.unfinished 2 · stop.busy 1'),
+    `确认框要显示未完成任务数与忙碌成员数，实际 ${JSON.stringify(confirmTexts)}`,
+  );
+
+  // ③ 取消：不发请求、不改任何状态，只收起确认条
+  const cancel = collect(runBox.tree, (node) => node.type === 'button' && (node.children ?? []).includes('stop.cancel'))[0];
+  cancel.props.onClick();
+  assert.equal(stopCalls.length, 0, '取消绝不发停止请求');
+  assert.equal(collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length, 0);
+
+  // ④ 确认：请求期间按钮禁用并显示「停止中…」，完成后提示已停止并刷新快照
+  let releaseStop;
+  stopImpl = () => new Promise((resolve) => { releaseStop = resolve; });
+  stopButton.props.onClick(click);
+  const confirmButton = collect(runBox.tree, (node) => node.type === 'button' && (node.children ?? []).includes('stop.confirm'))[0];
+  const done = confirmButton.props.onClick();
+  const stoppingButton = collect(runBox.tree, (node) => node.type === 'button' && (node.children ?? []).includes('stop.stopping'))[0];
+  assert.ok(stoppingButton, '请求进行中要显示「停止中…」');
+  assert.equal(stoppingButton.props.disabled, true, '进行中要禁用防重');
+  assert.equal(stoppingButton.props['aria-busy'], 'true');
+  releaseStop({ ok: true, stopped: true });
+  await done;
+  assert.equal(stopCalls.length, 1, '确认后只发一次请求');
+  assert.equal(collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length, 0);
+  const notice = collect(runBox.tree, (node) => node.props?.role === 'status')[0];
+  assert.equal(notice.children[0], 'stop.done');
+  assert.equal(refreshes.length, 1, '停止后要刷新快照（面板随轮询显示 halted）');
+
+  // ⑤ 401：不可重试的灰字提示，确认条收起
+  stopImpl = async () => ({ ok: false, retryable: false, status: 401 });
+  stopButton.props.onClick(click);
+  await collect(runBox.tree, (node) => node.type === 'button' && (node.children ?? []).includes('stop.confirm'))[0].props.onClick();
+  assert.equal(collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length, 0);
+  const authError = collect(runBox.tree, (node) => node.props?.['data-tone'] === 'muted')[0];
+  assert.equal(authError.children[0], 'stop.forbidden', '401 要说清无权停止');
+  assert.equal(authError.props.role, 'alert');
+
+  // ⑥ 网络错误：保留确认条可重试，错误用错误色
+  stopImpl = async () => ({ ok: false, retryable: true, status: 0 });
+  stopButton.props.onClick(click);
+  await collect(runBox.tree, (node) => node.type === 'button' && (node.children ?? []).includes('stop.confirm'))[0].props.onClick();
+  assert.ok(
+    collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length > 0,
+    '网络错误不能收起确认条',
+  );
+  const netError = collect(runBox.tree, (node) => node.props?.['data-tone'] === 'error')[0];
+  assert.equal(netError.children[0], 'stop.failed');
+});
+
+test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图卡片键盘可达', async () => {
+  // 能力探测只看「有没有这个方法」，所以宿主实现自己抛错是可能的：点击路径必须兜住
+  const { React, workspace } = await mountTeamWorkspace({
+    uiWorkspace: {
+      openSession() {
+        throw new Error('host open failed');
+      },
+    },
+  });
+
+  selectTab(workspace, 'view.members');
+  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
+  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
+  assert.equal(memberRow.props.role, 'button', '服务在就要可点');
+  assert.doesNotThrow(() => memberRow.props.onClick(), '宿主抛错不能冒到 React（否则面板白屏）');
+  const space = {
+    key: ' ',
+    prevented: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+  };
+  assert.doesNotThrow(() => memberRow.props.onKeyDown(space), 'Space 也不得抛错');
+  assert.equal(space.prevented, true, 'Space 要拦掉页面滚动');
+
+  selectTab(workspace, 'flow.tab');
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox);
+  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
+  const card = renderDirect(componentNamed(flowTree, 'FlowCard'));
+  assert.equal(card.props.role, 'button');
+  assert.equal(card.props.tabIndex, 0, '流程图卡片也要能键盘聚焦');
+  const enter = {
+    key: 'Enter',
+    prevented: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+  };
+  assert.doesNotThrow(() => card.props.onKeyDown(enter));
+  assert.equal(enter.prevented, true);
+});
+
+test('停止请求：确认后真实 POST 到插件路由并携带队长会话；403/503 是灰字不可重试', async () => {
+  const realFetch = globalThis.fetch;
+  const fetchCalls = [];
+  let fetchImpl;
+  globalThis.fetch = async (url, options) => {
+    // 插件 apply 时会拉一次精灵图资源（/asset），只拦停止路由，其余给无害 404
+    if (url !== '/plugins/dsh-teams/stop') return { ok: false, status: 404, json: async () => ({}) };
+    fetchCalls.push({ url, options });
+    return fetchImpl();
+  };
+  try {
+    const { React, workspace } = await mountTeamWorkspace();
+    // 不覆盖 onStop/onRefresh：走面板真实的 requestTeamStop 与 store.refresh 闭包
+    const runsBox = mountRunsView(React, workspace);
+    const runBox = mountRunItem(React, runsBox);
+    const click = { preventDefault() {}, stopPropagation() {} };
+    const openConfirm = () => {
+      const summary = collect(runBox.tree, (node) => node.type === 'summary')[0];
+      const button = (summary.children ?? []).find((node) =>
+        String(node.props?.className ?? '').includes('dsh-teams-run-stop'),
+      );
+      assert.ok(button, '停止按钮应在标题行');
+      button.props.onClick(click);
+      const confirm = collect(
+        runBox.tree,
+        (node) => node.type === 'button' && (node.children ?? []).includes('stop.confirm'),
+      )[0];
+      assert.ok(confirm, '应展开确认框');
+      return confirm;
+    };
+
+    // 200：body 必须是队长会话 id（不是成员子会话），成功后收起确认框并提示
+    fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ stopped: true }) });
+    await openConfirm().props.onClick();
+    assert.equal(fetchCalls.length, 1, '确认后应真的发一次请求');
+    assert.equal(fetchCalls[0].url, '/plugins/dsh-teams/stop');
+    assert.equal(fetchCalls[0].options.method, 'POST', '停止必须是 POST');
+    assert.deepEqual(JSON.parse(fetchCalls[0].options.body), { session: 'captain-1' });
+    assert.equal(
+      collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length,
+      0,
+      '成功后确认框收起',
+    );
+    assert.equal(collect(runBox.tree, (node) => node.props?.role === 'status')[0].children[0], 'stop.done');
+
+    // 503：鉴权服务不可用 → 灰字、不可重试、确认框收起（避免用户反复点）
+    fetchImpl = async () => ({ ok: false, status: 503 });
+    await openConfirm().props.onClick();
+    const authDown = collect(runBox.tree, (node) => node.props?.['data-tone'] === 'muted')[0];
+    assert.equal(authDown.children[0], 'stop.authUnavailable');
+    assert.equal(
+      collect(runBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-confirm')).length,
+      0,
+    );
+
+    // 403：与 401 同款灰字
+    fetchImpl = async () => ({ ok: false, status: 403 });
+    await openConfirm().props.onClick();
+    const forbidden = collect(runBox.tree, (node) => node.props?.['data-tone'] === 'muted')[0];
+    assert.equal(forbidden.children[0], 'stop.forbidden');
+  } finally {
+    if (realFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = realFetch;
+  }
+});

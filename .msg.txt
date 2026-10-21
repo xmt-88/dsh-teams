@@ -1,0 +1,18 @@
+feat: 面板打开子会话 + 停止确认框（对比文档的第 1、2 项）
+
+标准路径 7 个任务（含自动插入的 UI 设计），review/test/verify 三门 PASS，
+254 条测试全绿（基线 243 + 新增 11）。
+
+A. 点任务/成员打开子会话
+- 渲染期能力探测 canOpenSessionVia(ctx)：区分「没有 uiWorkspace 服务」「有服务但没有
+  childId」「有服务可打开」三态（UI 设计指出：原来的默认 ()=>false 分不清前两者）
+- 成员行 / 任务标题行 / 流程卡可点：role=button + tabIndex + Enter/Space
+- 取不到服务或 childId 时禁用并给 title，点击不抛错；openSessionVia 软依赖返回 false
+
+B. 停止确认框
+- 停止按钮只在当前运行的轮次标题行（四列网格，其它轮次零布局位移）
+- 行内确认条显示「未完成任务 N · 忙碌成员 M」，取消不发请求
+- 新增 POST /plugins/dsh-teams/stop：503/401/403/400/405 分支齐全，复用 stopRun，
+  尽力写 gate 审计事件；registerStateRoutes 增加可注入的 stopRun（便于测试，index.js 不改）
+- 401/403/503 灰字、网络错误保留确认条可重试、进行中 disabled+aria-busy
+- 面板仍然只有「停止」这一个写操作（README 已写明）

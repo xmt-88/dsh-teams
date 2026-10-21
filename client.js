@@ -95,6 +95,23 @@ window.__ModuleLoader__.load({
       'log.empty': '暂无事件',
       'refresh': '刷新',
 
+      // ---- 会话跳转与停止（停止是团队面板唯一的写操作） ----
+      'session.unavailable': '宿主没有提供打开会话的能力',
+      'session.none': '还没有可打开的会话',
+      'stop.button': '停止',
+      'stop.confirmTitle': '停止这一轮？',
+      'stop.unfinished': '未完成任务',
+      'stop.busy': '忙碌成员',
+      'stop.cancel': '取消',
+      'stop.confirm': '确认停止',
+      'stop.stopping': '停止中…',
+      'stop.done': '已停止，正在收口…',
+      'stop.alreadyEnded': '这一轮已经结束',
+      'stop.failed': '停止失败，请重试',
+      'stop.forbidden': '当前会话无权停止这一轮',
+      'stop.noRoute': '宿主没有提供停止接口（插件版本过旧）',
+      'stop.authUnavailable': '鉴权服务不可用，暂时无法停止',
+
       // ---- 角色页 ----
       'role.title': '角色',
       'role.builtin': '内置',
@@ -275,6 +292,23 @@ window.__ModuleLoader__.load({
       'task.skipped': 'Skipped',
       'log.empty': 'No events yet',
       'refresh': 'Refresh',
+
+      // ---- session jump and stop (the panel's only write) ----
+      'session.unavailable': 'This host does not expose session opening',
+      'session.none': 'No session to open yet',
+      'stop.button': 'Stop',
+      'stop.confirmTitle': 'Stop this run?',
+      'stop.unfinished': 'Unfinished tasks',
+      'stop.busy': 'Busy members',
+      'stop.cancel': 'Cancel',
+      'stop.confirm': 'Stop run',
+      'stop.stopping': 'Stopping…',
+      'stop.done': 'Stopped, wrapping up…',
+      'stop.alreadyEnded': 'This run has already ended',
+      'stop.failed': 'Stop failed, please retry',
+      'stop.forbidden': 'This session is not allowed to stop the run',
+      'stop.noRoute': 'The host does not provide the stop endpoint (plugin too old)',
+      'stop.authUnavailable': 'Authentication is unavailable, cannot stop right now',
 
       // ---- roles page ----
       'role.title': 'Roles',
@@ -607,6 +641,24 @@ window.__ModuleLoader__.load({
 .dsh-teams-run-bar > i{display:block;height:100%;background:var(--dsw-alias-state-success-primary);}
 .dsh-teams-run-body{padding:0 10px 10px;}
 .dsh-teams-run[data-phase="running"]{border-color:var(--dsw-alias-brand-primary);}
+/* 停止入口只出现在当前轮的标题行：多一列，其余轮次布局零位移 */
+.dsh-teams-run-head[data-has-stop="true"]{grid-template-columns:34px minmax(0,1fr) auto 12px;}
+.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-chevron{grid-column:4;}
+.dsh-teams-run-stop{grid-row:1 / span 2;grid-column:3;justify-self:end;font-size:11px;
+  padding:2px 9px;white-space:nowrap;
+  color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 65%,var(--dsw-alias-label-primary));
+  border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));}
+.dsh-teams-run-stop:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent);
+  color:var(--dsw-alias-label-primary);}
+/* 停止确认条：非模态，warning 语义（删除才是 error） */
+.dsh-teams-confirm[data-tone="warn"]{
+  border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 45%,var(--dsw-alias-border-l1));
+  background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 8%,var(--dsw-alias-bg-layer-2));}
+.dsh-teams-confirm-title{font-weight:600;color:var(--dsw-alias-label-primary);}
+.dsh-teams-confirm-count{font-size:11px;color:var(--dsw-alias-label-secondary);
+  font-variant-numeric:tabular-nums;}
+.dsh-teams-stop-note{font-size:11px;padding:2px 0 4px;color:var(--dsw-alias-label-secondary);}
+.dsh-teams-stop-note[data-tone="error"]{color:var(--dsw-alias-state-error-primary);}
 
 /* 三态 */
 .dsh-teams-empty{display:flex;align-items:center;justify-content:center;min-height:40px;
@@ -762,11 +814,18 @@ window.__ModuleLoader__.load({
   border:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1;}
 .dsh-teams-open{flex:none;color:var(--dsw-alias-label-secondary);font-size:16px;opacity:.45;}
 .dsh-teams-member[data-clickable="true"]:hover .dsh-teams-open{opacity:1;color:var(--dsw-alias-brand-primary);}
+/* 能力缺失时禁用而不是假装可点：cursor + 降透明，点击由「没有 onClick」兜底 */
+.dsh-teams-member[data-disabled="true"],.dsh-teams-flow-card[data-disabled="true"],
+.dsh-teams-task-head[data-disabled="true"]{cursor:not-allowed;}
+.dsh-teams-member[data-disabled="true"] .dsh-teams-open,
+.dsh-teams-flow-card[data-disabled="true"] .dsh-teams-flow-role{opacity:.6;}
+.dsh-teams-task-head[data-clickable="true"]{cursor:pointer;border-radius:6px;}
+.dsh-teams-task-head[data-clickable="true"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);
+  outline-offset:2px;}
 .dsh-teams-banner{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 8px;
   padding:6px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);
   border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);font-size:12px;}
 .dsh-teams-banner .dsh-teams-btn{margin-left:auto;}
-.dsh-teams-session-btn{font-size:11px;padding:1px 8px;margin-left:auto;}
 /* 设置卡片（plugins.item 槽位）。尺寸沿用既有刻度：行高 28、圆角 7–10、小字 11–12。 */
 .dsh-teams-set{display:flex;flex-direction:column;gap:10px;font-size:13px;
   color:var(--dsw-alias-label-primary);}
@@ -817,6 +876,26 @@ window.__ModuleLoader__.load({
      * -------------------------------------------------------------- */
 
     /**
+     * 取宿主 `uiWorkspace` 服务（软依赖）。
+     *
+     * `ctx.get()` 本身在宿主启动顺序变化时可能拿到 undefined，个别实现还会抛错；
+     * 这里统一兜住——面板永远可用，只是"打开会话"降级为不可点。
+     */
+    function uiWorkspaceOf(ctx) {
+      try {
+        return ctx.get('uiWorkspace');
+      } catch {
+        return undefined;
+      }
+    }
+
+    /** 宿主是否提供「打开会话」能力（渲染期能力探测用）。 */
+    function canOpenSessionVia(ctx) {
+      const uiWorkspace = uiWorkspaceOf(ctx);
+      return uiWorkspace !== undefined && typeof uiWorkspace.openSession === 'function';
+    }
+
+    /**
      * 打开某个会话：成员卡片 → 它的子会话；子会话横幅 → 队长会话。
      *
      * 走宿主的 `uiWorkspace.openSession(target)`（`SessionTarget = SessionId | SubagentAddress`）。
@@ -824,7 +903,7 @@ window.__ModuleLoader__.load({
      */
     function openSessionVia(ctx, sessionId) {
       if (typeof sessionId !== 'string' || sessionId === '') return false;
-      const uiWorkspace = ctx.get('uiWorkspace');
+      const uiWorkspace = uiWorkspaceOf(ctx);
       if (uiWorkspace === undefined || typeof uiWorkspace.openSession !== 'function') return false;
       try {
         uiWorkspace.openSession(sessionId);
@@ -832,6 +911,47 @@ window.__ModuleLoader__.load({
       } catch {
         return false;
       }
+    }
+
+    /**
+     * 面板唯一的写操作：停止当前团队。
+     *
+     * 只 POST 到 `/plugins/dsh-teams/stop`，鉴权与状态根定位都在宿主路由里做；
+     * 取消确认框不会调用它，所以取消不改变任何状态。任何失败都折成结果对象，
+     * **绝不上抛**——面板不能因为一次停止请求而崩掉。
+     *
+     * @returns {Promise<{ok:boolean, stopped?:boolean, retryable?:boolean, status?:number}>}
+     */
+    async function requestTeamStop(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        return { ok: false, retryable: false, status: 400 };
+      }
+      try {
+        const response = await fetch('/plugins/dsh-teams/stop', {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ session: sessionId }),
+          cache: 'no-store',
+        });
+        if (response.ok !== true) {
+          // 鉴权/装配失败重试也没用；只有 5xx（503 除外）与网络错误值得再点一次
+          const retryable = response.status >= 500 && response.status !== 503;
+          return { ok: false, retryable, status: response.status };
+        }
+        const body = await response.json();
+        return { ok: true, stopped: body?.stopped === true };
+      } catch {
+        return { ok: false, retryable: true, status: 0 };
+      }
+    }
+
+    /** 停止失败的文案：鉴权/路由缺失是不可重试的灰字，其余按错误色提示。 */
+    function stopFailureText(t, result) {
+      const status = result?.status;
+      if (status === 401 || status === 403) return t('stop.forbidden');
+      if (status === 404) return t('stop.noRoute');
+      if (status === 503) return t('stop.authUnavailable');
+      return t('stop.failed');
     }
 
     /**
@@ -1267,11 +1387,14 @@ window.__ModuleLoader__.load({
      * 信息层级：角色名（2 行 clamp）→ 用量（label/value 右对齐 + tabular-nums）→ 状态胶囊。
      * 状态不单靠颜色（有文字），并带 aria-label。
      */
-    function FlowCard({ step, t, openSession }) {
+    function FlowCard({ step, t, openSession, canOpenSession }) {
       const look = lookOf(step.role);
       const status = String(step.status ?? 'pending');
       const metrics = step.metrics ?? {};
-      const clickable = typeof step.childId === 'string' && step.childId !== '';
+      const hasChild = typeof step.childId === 'string' && step.childId !== '';
+      // 能力缺失时不给"可点"的外观（禁用 + title 说明），点击路径也整段不挂
+      const clickable = hasChild && canOpenSession === true;
+      const unavailable = hasChild && canOpenSession !== true;
       const open = () => {
         if (clickable) openSession(step.childId);
       };
@@ -1293,10 +1416,18 @@ window.__ModuleLoader__.load({
           className: 'dsh-teams-flow-card',
           'data-status': status,
           'data-clickable': clickable ? 'true' : undefined,
+          'data-disabled': unavailable ? 'true' : undefined,
           role: clickable ? 'button' : undefined,
           tabIndex: clickable ? 0 : undefined,
           'aria-label': `${roleName}，${statusLabel}${described === '' ? '' : `，${described}`}`,
-          title: clickable ? t('flow.openSession') : String(step.failure ?? ''),
+          'aria-disabled': unavailable ? 'true' : undefined,
+          title: clickable
+            ? t('flow.openSession')
+            : unavailable
+              ? t('session.unavailable')
+              : typeof step.failure === 'string' && step.failure !== ''
+                ? step.failure
+                : t('session.none'),
           style: { '--role-accent': look.accent },
           onClick: clickable ? open : undefined,
           onKeyDown: clickable
@@ -1342,7 +1473,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 一轮运行的流程图：列 = 依赖层级，左→右。 */
-    function FlowDiagram({ run, t, openSession }) {
+    function FlowDiagram({ run, t, openSession, canOpenSession }) {
       const steps = Array.isArray(run.steps) ? run.steps : [];
       if (steps.length === 0) return h('div', { className: 'dsh-teams-muted' }, t('flow.empty'));
       const layers = layersOf(steps);
@@ -1355,7 +1486,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'dsh-teams-flow-col', key: `col-${index}` },
-            ...layer.map((step) => h(FlowCard, { key: step.id, step, t, openSession })),
+            ...layer.map((step) => h(FlowCard, { key: step.id, step, t, openSession, canOpenSession })),
           ),
         );
       });
@@ -1363,15 +1494,85 @@ window.__ModuleLoader__.load({
     }
 
     /** 一轮运行的折叠项：头部一行（立绘牌 + 标题 + meta + 箭头 + 进度条），展开是流程图。 */
-    function RunItem({ run, t, openSession, defaultOpen }) {
+    function RunItem({ run, t, openSession, canOpenSession, defaultOpen, busyMembers, onStop, onRefresh }) {
       // 折叠时不挂载流程图：DOM 里只有头部（历史再长，挂载的卡片数 = 展开那一轮的步数）
       const [open, setOpen] = React.useState(defaultOpen === true);
+      // 停止确认框：确认之前**不发任何请求**，所以取消不会改变任何状态
+      const [confirming, setConfirming] = React.useState(false);
+      const [stopping, setStopping] = React.useState(false);
+      const [stopError, setStopError] = React.useState(undefined);
+      const [stopNotice, setStopNotice] = React.useState(undefined);
+      const stopButtonRef = React.useRef(null);
+      // 停止是异步收口的定时器：卸载时清掉，避免面板关掉后还在请求
+      const settleTimers = React.useRef([]);
+      React.useEffect(
+        () => () => {
+          for (const timer of settleTimers.current) clearTimeout(timer);
+          settleTimers.current = [];
+        },
+        [],
+      );
       const steps = Array.isArray(run.steps) ? run.steps : [];
       const done = steps.filter((step) => step.status === 'done').length;
       const failed = steps.filter((step) => step.status === 'failed').length;
       const running = steps.filter((step) => step.status === 'running').length;
       const total = steps.length;
       const phase = run.phase ?? 'idle';
+      // 停止入口只在「正在跑的这一轮」出现：历史轮次与已收口的轮次都没有可停止的循环。
+      // （快照里 current 对最新一轮恒为 true，所以还要看 phase——否则已完成的轮次也显示「停止」）
+      const canStop = run.current === true && phase === 'running' && typeof onStop === 'function';
+      // 计数：未完成任务直接从这一轮的步骤算；忙碌成员来自团队快照（缺数据就显示「—」）
+      const unfinished =
+        total === 0
+          ? undefined
+          : steps.filter((step) => step.status !== 'done' && step.status !== 'failed' && step.status !== 'skipped').length;
+      const countText = (value) => (Number.isFinite(value) ? String(value) : '—');
+      const confirmTitleId = `dsh-teams-stop-title-${String(run.runId ?? 'run').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+      const confirmCountId = `${confirmTitleId}-count`;
+      const askStop = (event) => {
+        // summary 的默认行为是折叠/展开：不截断会"点停止却把这一轮收起来"
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(true);
+        setStopError(undefined);
+        setStopNotice(undefined);
+        setConfirming(true);
+      };
+      const closeConfirm = () => {
+        setConfirming(false);
+        stopButtonRef.current?.focus?.();
+      };
+      const submitStop = async () => {
+        if (stopping) return;
+        setStopping(true);
+        setStopError(undefined);
+        let result;
+        try {
+          result = await onStop();
+        } catch {
+          // 注入的停止实现抛错也不能让面板锁死在「停止中」
+          result = { ok: false, retryable: true, status: 0 };
+        }
+        setStopping(false);
+        if (result !== undefined && result.ok === true) {
+          setConfirming(false);
+          setStopNotice(result.stopped === true ? t('stop.done') : t('stop.alreadyEnded'));
+          if (typeof onRefresh === 'function') {
+            onRefresh();
+            if (result.stopped === true) {
+              // 停止是异步收口的：stopRun 只 abort，调度器还要跑完 finally 才写 halted。
+              // 正常轮询间期 1.2s，补两次定向刷新让面板在 1 秒内看到 halted / 不残留 running。
+              for (const delay of [350, 900]) {
+                settleTimers.current.push(setTimeout(() => onRefresh(), delay));
+              }
+            }
+          }
+          return;
+        }
+        // 鉴权/路由缺失重试也没用：收起确认条，只留一条灰字；网络/5xx 保留确认条可再点
+        setStopError({ text: stopFailureText(t, result), retryable: result?.retryable === true });
+        if (result === undefined || result.retryable !== true) setConfirming(false);
+      };
       // 立绘牌固定用蓝色初版形象（与需求分析师卡片同一个蓝），不随运行状态变色——
       // 状态已经由边框颜色/状态胶囊表达，头像再变一次只会让"这个人是谁"变得难认。
       const accent = WHALE_BLUE;
@@ -1394,7 +1595,7 @@ window.__ModuleLoader__.load({
         },
         h(
           'summary',
-          { className: 'dsh-teams-run-head' },
+          { className: 'dsh-teams-run-head', 'data-has-stop': canStop ? 'true' : undefined },
           // 立绘牌：全身人物站在牌底（不裁头）
           h('span', { className: 'dsh-teams-run-avatar' }, h(GirlArt, { accent, size: 34 })),
           h('span', { className: 'dsh-teams-run-subject', title: subject }, subject),
@@ -1406,6 +1607,20 @@ window.__ModuleLoader__.load({
               : null,
             h('span', null, meta),
           ),
+          canStop
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  ref: stopButtonRef,
+                  className: 'dsh-teams-btn dsh-teams-run-stop',
+                  'aria-label': `${t('stop.button')}：${subject}`,
+                  title: t('stop.button'),
+                  onClick: askStop,
+                },
+                t('stop.button'),
+              )
+            : null,
           h('span', { className: 'dsh-teams-run-chevron', 'aria-hidden': 'true' }, '⌄'),
           // 进度条贴折叠行底边：折叠时也能看完成度
           total > 0
@@ -1416,7 +1631,71 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
-        open ? h('div', { className: 'dsh-teams-run-body' }, h(FlowDiagram, { run, t, openSession })) : null,
+        open
+          ? h(
+              'div',
+              { className: 'dsh-teams-run-body' },
+              confirming
+                ? h(
+                    'div',
+                    {
+                      className: 'dsh-teams-confirm',
+                      'data-tone': 'warn',
+                      role: 'group',
+                      'aria-labelledby': confirmTitleId,
+                      'aria-describedby': confirmCountId,
+                      onKeyDown: (event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          closeConfirm();
+                        }
+                      },
+                    },
+                    h('span', { className: 'dsh-teams-confirm-title', id: confirmTitleId }, t('stop.confirmTitle')),
+                    h(
+                      'span',
+                      { className: 'dsh-teams-confirm-count', id: confirmCountId },
+                      `${t('stop.unfinished')} ${countText(unfinished)} · ${t('stop.busy')} ${countText(busyMembers)}`,
+                    ),
+                    h(
+                      'div',
+                      { className: 'dsh-teams-role-actions' },
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dsh-teams-btn',
+                          autoFocus: true,
+                          disabled: stopping,
+                          onClick: () => setConfirming(false),
+                        },
+                        t('stop.cancel'),
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dsh-teams-btn dsh-teams-run-stop',
+                          disabled: stopping,
+                          'aria-busy': stopping ? 'true' : undefined,
+                          onClick: submitStop,
+                        },
+                        stopping ? t('stop.stopping') : t('stop.confirm'),
+                      ),
+                    ),
+                  )
+                : null,
+              stopNotice ? h('div', { className: 'dsh-teams-stop-note', role: 'status' }, stopNotice) : null,
+              stopError
+                ? h(
+                    'div',
+                    { className: 'dsh-teams-stop-note', 'data-tone': stopError.retryable ? 'error' : 'muted', role: 'alert' },
+                    stopError.text,
+                  )
+                : null,
+              h(FlowDiagram, { run, t, openSession, canOpenSession }),
+            )
+          : null,
       );
     }
 
@@ -1424,12 +1703,16 @@ window.__ModuleLoader__.load({
     const RUNS_PAGE = 8;
 
     /** 运行列表：每次任务一项，最新在最上面。 */
-    function RunsView({ team, t, openSession }) {
+    function RunsView({ team, t, openSession, canOpenSession, onStop, onRefresh }) {
       const runs = Array.isArray(team.runs) ? team.runs : [];
       const [showAll, setShowAll] = React.useState(false);
       if (runs.length === 0) return h('div', { className: 'dsh-teams-empty' }, t('view.noTasks'));
       const shown = showAll ? runs : runs.slice(0, RUNS_PAGE);
       const hidden = runs.length - shown.length;
+      // 确认框里的「忙碌成员」：没有成员数据时给 undefined，由 UI 显示「—」而不是 0
+      const members = Array.isArray(team.members) ? team.members : [];
+      const busyMembers =
+        members.length === 0 ? undefined : members.filter((member) => member.status === 'working').length;
       return h(
         'div',
         { className: 'dsh-teams-runs' },
@@ -1438,6 +1721,10 @@ window.__ModuleLoader__.load({
               run,
               t,
               openSession,
+              canOpenSession,
+              busyMembers,
+              onStop,
+              onRefresh,
               // 极端数据：步骤特别多的运行默认折叠，避免一次性挂载几百张卡
               defaultOpen: index === 0 && (Array.isArray(run.steps) ? run.steps.length : 0) <= 30,
             })),
@@ -1458,6 +1745,10 @@ window.__ModuleLoader__.load({
       const [, setTick] = React.useState(0);
       // 打开会话的能力由面板注册处注入（组件在 factory 作用域里拿不到 ctx）
       const openSession = typeof props.onOpenSession === 'function' ? props.onOpenSession : () => false;
+      // 渲染期能力探测：宿主没有 uiWorkspace 时，卡片渲染成禁用态而不是"看着能点"。
+      // 探测本身也兜住异常——宿主服务状态变化不能让面板渲染失败。
+      const canOpenSession =
+        typeof props.onCanOpenSession === 'function' && props.onCanOpenSession() === true;
 
       React.useEffect(() => {
         const unsubscribe = store.subscribe(() => setTick((value) => value + 1));
@@ -1516,11 +1807,19 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'dsh-teams-skeleton', 'aria-busy': 'true' }, ...[0, 1, 2].map((i) => h('span', { key: i })))
           : h('div', { className: 'dsh-teams-empty' }, t('view.empty'));
       } else if (tab === 'runs') {
-        body = h(RunsView, { team, t, openSession });
+        body = h(RunsView, {
+          team,
+          t,
+          openSession,
+          canOpenSession,
+          // 面板唯一的写操作：确认后才 POST，取消不会调用它
+          onStop: () => requestTeamStop(team.captainSessionId),
+          onRefresh: () => store.refresh(),
+        });
       } else if (tab === 'members') {
-        body = h(MembersView, { team, t, openSession });
+        body = h(MembersView, { team, t, openSession, canOpenSession });
       } else if (tab === 'tasks') {
-        body = h(TasksView, { team, t, openSession });
+        body = h(TasksView, { team, t, openSession, canOpenSession });
       } else {
         body = h(LogView, { team, t });
       }
@@ -1939,7 +2238,7 @@ window.__ModuleLoader__.load({
       return value.replace('T', ' ').slice(11, 19);
     }
 
-    function MembersView({ team, t }) {
+    function MembersView({ team, t, openSession, canOpenSession }) {
       const nodes = [];
       const stats = team.stats ?? {};
 
@@ -1986,7 +2285,10 @@ window.__ModuleLoader__.load({
       } else {
         for (const member of members) {
           const sessionId = member.sessionId;
-          const clickable = typeof sessionId === 'string' && sessionId !== '';
+          const hasSession = typeof sessionId === 'string' && sessionId !== '';
+          // 有子会话 + 宿主提供 uiWorkspace 才可点；能力缺失时禁用并给 title（点击不抛错）
+          const clickable = hasSession && canOpenSession === true;
+          const unavailable = hasSession && canOpenSession !== true;
           const openMember = () => {
             if (clickable) openSession(sessionId);
           };
@@ -1997,9 +2299,18 @@ window.__ModuleLoader__.load({
                 className: 'dsh-teams-card dsh-teams-member',
                 key: member.role ?? member.name,
                 'data-clickable': clickable ? 'true' : undefined,
+                'data-disabled': unavailable ? 'true' : undefined,
                 role: clickable ? 'button' : undefined,
                 tabIndex: clickable ? 0 : undefined,
-                title: clickable ? t('member.openSession') : undefined,
+                'aria-label': clickable
+                  ? `${member.roleName ?? member.name}，${t('member.openSession')}`
+                  : undefined,
+                'aria-disabled': unavailable ? 'true' : undefined,
+                title: clickable
+                  ? t('member.openSession')
+                  : hasSession
+                    ? t('session.unavailable')
+                    : t('session.none'),
                 onClick: clickable ? openMember : undefined,
                 onKeyDown: clickable
                   ? (event) => {
@@ -2027,7 +2338,7 @@ window.__ModuleLoader__.load({
                   { className: 'dsh-teams-chip', 'data-state': String(member.status ?? 'idle') },
                   member.status === 'working' ? t('member.working') : t('member.idle'),
                 ),
-                clickable ? h('span', { className: 'dsh-teams-open', 'aria-hidden': 'true' }, '›') : null,
+                hasSession ? h('span', { className: 'dsh-teams-open', 'aria-hidden': 'true' }, '›') : null,
               ),
             ),
           );
@@ -2087,7 +2398,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function TasksView({ team, t }) {
+    function TasksView({ team, t, openSession, canOpenSession }) {
       const tasks = Array.isArray(team.tasks) ? team.tasks : [];
       if (tasks.length === 0) {
         return h('div', { className: 'dsh-teams-muted' }, t('view.noTasks'));
@@ -2123,6 +2434,14 @@ window.__ModuleLoader__.load({
             .filter(Boolean)
             .join('　·　');
 
+          // 这一步的子会话入口：点标题行进它自己完整的对话（含工具调用与推理）
+          const hasChild = typeof task.childId === 'string' && task.childId !== '';
+          const clickable = hasChild && canOpenSession === true;
+          const unavailable = hasChild && canOpenSession !== true;
+          const openTask = () => {
+            if (clickable) openSession(task.childId);
+          };
+
           return h(
             'div',
             {
@@ -2134,23 +2453,32 @@ window.__ModuleLoader__.load({
             },
             h(
               'div',
-              { className: 'dsh-teams-row' },
+              {
+                className: 'dsh-teams-row dsh-teams-task-head',
+                'data-clickable': clickable ? 'true' : undefined,
+                'data-disabled': unavailable ? 'true' : undefined,
+                role: clickable ? 'button' : undefined,
+                tabIndex: clickable ? 0 : undefined,
+                'aria-label': clickable
+                  ? `${String(task.subject ?? task.id)}，${t('task.openSession')}`
+                  : undefined,
+                'aria-disabled': unavailable ? 'true' : undefined,
+                title: clickable ? t('task.openSession') : unavailable ? t('session.unavailable') : t('session.none'),
+                onClick: clickable ? openTask : undefined,
+                onKeyDown: clickable
+                  ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openTask();
+                      }
+                    }
+                  : undefined,
+              },
               h('strong', null, String(task.subject ?? task.id)),
               h('span', { className: 'dsh-teams-chip', 'data-state': String(status) }, t(`task.${status}`)),
               watchBadge(task, t),
-              // 这一步的子会话入口：点进去看它自己完整的对话（含工具调用与推理）
-              typeof task.childId === 'string' && task.childId !== ''
-                ? h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'dsh-teams-btn dsh-teams-session-btn',
-                      title: t('task.openSession'),
-                      onClick: () => openSession(task.childId),
-                    },
-                    `${t('task.openSession')} ›`,
-                  )
-                : null,
+              // 可点/禁用都保留行尾的「去会话」提示；真正的点击目标是整条标题行
+              hasChild ? h('span', { className: 'dsh-teams-open', 'aria-hidden': 'true' }, '↗') : null,
             ),
             h('div', { className: 'dsh-teams-muted', style: { marginTop: 4 } }, meta),
             budgetBar(task, t),
@@ -2872,6 +3200,8 @@ window.__ModuleLoader__.load({
                     // 角色是工作区级的：没团队时也要能管理，所以把会话 id 一并传下去
                     sessionId: String(props?.session?.id ?? props?.sessionId ?? ''),
                     onOpenSession: (sessionId) => openSessionVia(ctx, sessionId),
+                    // 能力探测：宿主没有 uiWorkspace 时卡片渲染成禁用态并给 title 说明
+                    onCanOpenSession: () => canOpenSessionVia(ctx),
                   });
                 }),
               ),
