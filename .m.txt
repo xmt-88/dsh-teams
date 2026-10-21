@@ -1,0 +1,18 @@
+fix: 停止挂死 + 任务模型字段缺失（验证门的 FAIL 是真问题）
+
+验证门判 FAIL 的那条验收项（详情显示任务模型）确实不成立，而且是我 brief
+里写错了前提（断言「快照已带 model、服务端不用改」）。两处一起修：
+
+1) 停止挂死（严重）
+   runTask 只 race 了 run.result 与看门狗，**没有 race abort**。真实子代理不保证
+   响应 abort（实测：teams_stop 后子代理照旧跑，run.result 不结算 → 循环的
+   allSettled 永不返回 → 团队永久停在 running，等 5 分钟也不收敛）。
+   修法：abort 进 race，本地立刻结算并尽量 dispose，然后如实回 stops。
+   回归：用「永不结算」的耳聋子代理验证停止仍在数百毫秒内落到 halted。
+
+2) 任务记录没有 model
+   model 只传给了派发，没落盘 → 快照无此字段 → 详情恒显示「—」。
+   修法：派发时写 task.model/provider，当前轮与归档轮都透出。
+   回归：断言每个任务记录都带模型。
+
+276 条测试全绿。

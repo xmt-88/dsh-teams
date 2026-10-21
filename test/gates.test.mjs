@@ -1400,3 +1400,64 @@ test('复核 LOW：事件被 64KB 分块边界切断多字节字符时不得产�
     assert.equal(JSON.stringify(events).includes('\uFFFD'), false, '不得出现 U+FFFD 替换符');
   });
 });
+
+test('停止必须自愈：子代理不响应 abort 时，runTask 也要立刻返回 stopped', async () => {
+  await withDir(async (dir) => {
+    // 真实宿主的子代理不保证理会 abort（实测：teams_stop 后子代理照旧跑，
+    // run.result 永不结算 → 循环的 allSettled 挂死 → 团队永久 running）。
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async () => ({
+                childId: 'deaf-child',
+                // 永不结算，也不理会 signal
+                result: new Promise(() => {}),
+                dispose: async () => {},
+              }),
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const { stopRun } = await import('../lib/scheduler.js');
+    const { stateRootOf } = await import('../lib/state.js');
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'deaf', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    stopRun(stateRootOf(dir, CONFIG.stateDir), 'deaf');
+
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'deaf');
+      if (team?.phase === 'halted' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'halted', '耳聋的子代理也不能让停止挂死');
+  });
+});
+
+test('派发时把模型写进任务记录，快照才有的显示', async () => {
+  await withDir(async (dir) => {
+    const fake = fakeSubagents(() => '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS');
+    const base = { ctx: fake.ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'mdl', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun({ ...base, model: 'deepseek-v4.1-flash' });
+    for (let i = 0; i < 200; i += 1) {
+      const team = await readTeam(join(dir, '.dsh-teams'), 'mdl');
+      if (team?.phase === 'done' || team?.phase === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'mdl');
+    assert.ok(
+      graph.tasks.every((task) => task.model === 'deepseek-v4.1-flash'),
+      `每个任务的记录都该带模型，实际 ${JSON.stringify(graph.tasks.map((t) => t.model))}`,
+    );
+  });
+});

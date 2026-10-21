@@ -52,7 +52,7 @@ function locatePackage(name) {
   return undefined;
 }
 
-/** 最小 DOM 替身：插件只用到 createElement / head.appendChild / removeChild。 */
+/** 最小 DOM 替身：插件用到 createElement / head.appendChild / removeChild，外加文档级 Esc 监听。 */
 function fakeDocument(tags = []) {
   const head = {
     appendChild(node) {
@@ -67,11 +67,27 @@ function fakeDocument(tags = []) {
       return node;
     },
   };
+  const listeners = new Map();
   return {
     createElement() {
       return { textContent: '', parentNode: null, setAttribute() {} };
     },
     head,
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const list = listeners.get(type) ?? [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
+    /** 同步派发，返回是否有监听器接住（Esc 取消钉住走的就是这条路径）。 */
+    dispatch(type, event) {
+      const list = [...(listeners.get(type) ?? [])];
+      for (const fn of list) fn(event);
+      return list.length > 0;
+    },
   };
 }
 
@@ -86,6 +102,8 @@ function fakeReact() {
   const slots = [];
   let cursor = 0;
   let redraw = () => {};
+  let collectEffects = false;
+  let pendingEffects = [];
 
   const React = {
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
@@ -100,8 +118,11 @@ function fakeReact() {
         },
       ];
     },
-    // 卡片用 useEffect 订阅 form/mirror；替身里这两者不会自己变化，跳过即可
-    useEffect() {},
+    // 默认不跑 effect：设置卡片的 form/mirror 订阅在替身里没有意义。
+    // 需要验证「容器宽度实测 → 自动退回列表」或「文档级 Esc」时用 withEffects 显式打开。
+    useEffect(fn) {
+      if (collectEffects) pendingEffects.push(fn);
+    },
     useMemo: (fn) => fn(),
     useRef(value) {
       const index = cursor++;
@@ -115,6 +136,11 @@ function fakeReact() {
    * setState 触发的重渲染会就地更新这棵树（返回同一个包装对象，便于断言最新状态）。
    */
   React.mount = (component, props) => {
+    // 每个挂载实例从干净的 hooks 槽开始：否则 A 组件的 state 会被 B 组件读到
+    // （FlowDiagram 有 4 个 useState，按源码顺序复用槽位，串了会直接读出错误状态）
+    slots.length = 0;
+    cursor = 0;
+    pendingEffects = [];
     const box = { tree: undefined };
     const render = () => {
       cursor = 0;
@@ -123,6 +149,23 @@ function fakeReact() {
     redraw = render;
     render();
     return box;
+  };
+
+  /** 显式打开 effect 收集（只包住要测的那次挂载/交互，避免其它组件的订阅被误跑）。 */
+  React.withEffects = (fn) => {
+    collectEffects = true;
+    try {
+      return fn();
+    } finally {
+      collectEffects = false;
+    }
+  };
+
+  /** 同步执行收集到的 effect，返回各自的清理函数（不自动执行，保持用例可控）。 */
+  React.flushEffects = () => {
+    const list = pendingEffects;
+    pendingEffects = [];
+    return list.map((fn) => fn());
   };
 
   return React;
@@ -603,17 +646,30 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /team\.runs/, '运行列表要读快照的 runs');
   assert.match(source, /defaultOpen: index === 0/, '最新一轮默认展开');
 
-  // 流程图：依赖层级 = 列，列之间画折线（左→右）
+  // 流程图：像素坐标分层 + 单层 SVG 曲线（C 贝塞尔 + 箭头），不是 CSS 伪元素
   assert.match(source, /function layersOf\(/, '应按依赖算层级');
-  assert.match(source, /function FlowGap\(/, '列之间要有连接线');
-  assert.match(source, /H50 V\$\{y2\} H100/, '连接线是折线（水平-垂直-水平），从左列连到右列');
+  assert.match(source, /function flowNodes\(/, '应由纯函数算出节点像素坐标');
+  assert.match(source, /function flowEdges\(/, '应只画合法依赖边');
+  assert.match(source, /function flowEdgePath\(/, '应有曲线路径函数');
+  assert.match(source, /C\$\{x1 \+ bend\}/, '连线是横向 C 贝塞尔');
+  assert.match(source, /markerEnd: `url\(#\$\{/, '曲线要有箭头（marker-end）');
+  assert.match(source, /h\(\s*'marker',/, '箭头用 SVG marker 定义');
+  assert.match(source, /dsh-teams-flow-edges/, '曲线层是独立 SVG');
+  assert.match(source, /function flowChain\(/, '悬停要算完整上下游链');
+  assert.match(source, /function flowDetail\(/, '钉住要能算负责人/未满足前置/下游解锁');
+  assert.match(source, /function flowModeFor\(/, '窄宽度要能降级');
+  assert.match(source, /const FLOW_LIST_WIDTH = 640/, '640px 以下退回列表视图');
+  assert.match(source, /function FlowList\(/, '窄面板渲染列表视图');
+  assert.match(source, /function FlowDetail\(/, '钉住后渲染详情面板');
+  assert.match(source, /tabIndex: 0,/, '每个节点都要能 Tab 聚焦');
+  assert.ok(!/dsh-teams-flow-gap/.test(source), '旧的折线 Gap 不应残留');
 
   // 方形身份卡：鲸鱼 + 角色名 + 用量 + 状态边框 + 整卡可点
   assert.match(source, /function FlowCard\(/, '应有方形身份卡');
   assert.match(source, /metrics\.steps/, '卡片要显示步数');
   assert.match(source, /metrics\.cacheReadTokens/, '卡片要显示缓存命中量');
   assert.match(source, /formatTokens/, 'token 数要格式化（1.2k 这种）');
-  assert.match(source, /openSession\(step\.childId\)/, '点卡片进对应子代理会话');
+  assert.match(source, /openSession\(step\.childId\)/, '详情面板承接打开子会话');
 
   // 状态边框：进行中黄色流光（旋转的锥形渐变）、完成绿、失败红
   assert.match(source, /dsh-teams-flow-glow/, '应有流光层');
@@ -628,6 +684,12 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /data-status="blocked"\]\{[\s\S]{0,160}state-warn-primary/, '受阻=橙边框');
   assert.match(source, /data-status="pending"\],[\s\S]{0,160}border-style:dashed/, '待派发=虚线边框');
   assert.match(source, /prefers-reduced-motion/, '尊重"减少动效"偏好');
+  // 依赖图交互态：钉住环、上下游高亮/淡化、窄宽详情单列（都只用主题令牌）
+  assert.match(source, /\.dsh-teams-flow-canvas\{/, '节点画布要能绝对定位');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-active="true"\]/, '高亮边用品牌色');
+  assert.match(source, /\.dsh-teams-flow-card\[data-pinned="true"\]/, '钉住要有可见描边');
+  assert.match(source, /\.dsh-teams-flow-card\[data-dim="true"\] \.dsh-teams-flow-stage/, '无关节点只淡舞台');
+  assert.match(source, /\.dsh-teams-flow\[data-mode="list"\] \.dsh-teams-flow-detail-grid/, '窄面板详情单列');
 
   // 鲸鱼形象：内联 SVG（不引外部图片）+ 每个角色不同装扮
   // 形象：矢量（描摹自原画），加载失败退回手绘鲸鱼
@@ -1448,6 +1510,23 @@ function mountRunItem(React, runsBox, runOverride) {
   return React.mount(node.type, runOverride === undefined ? node.props : { ...node.props, run: runOverride });
 }
 
+/** 挂载依赖图：FlowDiagram 有 hooks，必须走 React.mount；width 是测试注入的宽度。 */
+function mountFlow(React, runBox, overrides = {}) {
+  const node = componentNamed(runBox.tree, 'FlowDiagram');
+  assert.ok(node, '应渲染依赖图');
+  return React.mount(node.type, { ...node.props, width: 900, ...overrides });
+}
+
+/** 渲染某个步骤的卡（FlowCard 无 hooks，可直接调用）。 */
+function renderCard(flowBox, stepId) {
+  const node = collect(
+    flowBox.tree,
+    (item) => typeof item.type === 'function' && item.type.name === 'FlowCard' && item.props?.step?.id === stepId,
+  )[0];
+  assert.ok(node, `应渲染步骤 ${stepId} 的卡片`);
+  return renderDirect(node);
+}
+
 test('面板：成员行与任务标题行可打开子会话（键盘也可），流程图卡片同样可点', async () => {
   const opened = [];
   const { React, workspace } = await mountTeamWorkspace({
@@ -1483,15 +1562,29 @@ test('面板：成员行与任务标题行可打开子会话（键盘也可）�
   taskHead.props.onKeyDown(space);
   assert.equal(space.defaultPrevented, true, 'Space 要拦掉滚动/折叠');
 
-  // ③ 流程图卡片：同一个子会话入口
+  // ③ 流程图卡片：点击 = 钉住；打开子会话的入口在详情面板里
   selectTab(workspace, 'flow.tab');
   const runsBox = mountRunsView(React, workspace);
   const runBox = mountRunItem(React, runsBox);
-  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
-  const cardTree = renderDirect(componentNamed(flowTree, 'FlowCard'));
-  assert.equal(cardTree.props.role, 'button', '流程图卡片可点');
+  const flowBox = mountFlow(React, runBox);
+  const cardTree = renderCard(flowBox, 't1');
+  assert.equal(cardTree.props.role, 'button', '流程图卡片可点（钉住）');
+  assert.equal(cardTree.props.tabIndex, 0, '键盘可聚焦');
+  assert.equal(cardTree.props['aria-pressed'], 'false', '未钉住时 aria-pressed=false');
   cardTree.props.onClick();
-  assert.equal(opened.at(-1), 'child-flow');
+  assert.deepEqual(
+    opened,
+    ['child-a', 'child-a', 'child-b', 'child-b'],
+    '点卡片本身不再打开会话（任务标题行的点击和 Space 各开一次）',
+  );
+  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  const openButton = collect(
+    detail,
+    (node) => node.type === 'button' && String(node.props?.className ?? '').includes('dsh-teams-flow-detail-open'),
+  )[0];
+  assert.ok(openButton, '详情面板应承接会话入口');
+  openButton.props.onClick();
+  assert.equal(opened.at(-1), 'child-flow', '详情里的按钮打开该步骤子会话');
 });
 
 test('面板降级：取不到 uiWorkspace 时成员行/任务行/流程卡禁用并给 title，点击不抛错', async () => {
@@ -1518,12 +1611,20 @@ test('面板降级：取不到 uiWorkspace 时成员行/任务行/流程卡禁�
   selectTab(workspace, 'flow.tab');
   const runsBox = mountRunsView(React, workspace);
   const runBox = mountRunItem(React, runsBox);
-  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
-  const cardTree = renderDirect(componentNamed(flowTree, 'FlowCard'));
-  assert.equal(cardTree.props.role, undefined);
-  assert.equal(cardTree.props.onClick, undefined);
-  assert.equal(cardTree.props['aria-disabled'], 'true');
-  assert.equal(cardTree.props.title, 'session.unavailable');
+  const flowBox = mountFlow(React, runBox);
+  const cardTree = renderCard(flowBox, 't1');
+  // 钉住不依赖宿主能力：没有 uiWorkspace 也能看依赖链与详情
+  assert.equal(cardTree.props.role, 'button');
+  assert.equal(cardTree.props['aria-disabled'], undefined);
+  assert.doesNotThrow(() => cardTree.props.onClick());
+  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  const openButton = collect(
+    detail,
+    (node) => node.type === 'button' && String(node.props?.className ?? '').includes('dsh-teams-flow-detail-open'),
+  )[0];
+  assert.equal(openButton.props.disabled, true, '没有宿主能力时会话按钮禁用');
+  assert.equal(openButton.props.title, 'session.unavailable');
+  assert.doesNotThrow(() => openButton.props.onClick?.());
 });
 
 test('停止入口只在正在跑的当前轮出现（历史轮与已收口轮都没有）', async () => {
@@ -1676,8 +1777,8 @@ test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图�
   selectTab(workspace, 'flow.tab');
   const runsBox = mountRunsView(React, workspace);
   const runBox = mountRunItem(React, runsBox);
-  const flowTree = renderDirect(componentNamed(runBox.tree, 'FlowDiagram'));
-  const card = renderDirect(componentNamed(flowTree, 'FlowCard'));
+  const flowBox = mountFlow(React, runBox);
+  const card = renderCard(flowBox, 't1');
   assert.equal(card.props.role, 'button');
   assert.equal(card.props.tabIndex, 0, '流程图卡片也要能键盘聚焦');
   const enter = {
@@ -1687,8 +1788,676 @@ test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图�
       this.prevented = true;
     },
   };
-  assert.doesNotThrow(() => card.props.onKeyDown(enter));
+  assert.doesNotThrow(() => card.props.onKeyDown(enter), '钉住不碰宿主 openSession，不应抛错');
   assert.equal(enter.prevented, true);
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), 'Enter 应钉住并展开详情');
+  const esc = {
+    key: 'Escape',
+    prevented: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+  };
+  assert.doesNotThrow(() => renderCard(flowBox, 't1').props.onKeyDown(esc));
+  assert.equal(esc.prevented, true);
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, 'Esc 取消钉住');
+});
+
+/* ================================================================== *
+ * F. 依赖曲线视图：分层布局 / SVG 贝塞尔 / 上下游 / 钉住 / 窄宽降级
+ * ================================================================== */
+
+/** 9 节点 + 多扇出：5 层、最多同层 3 个。 */
+const FLOW_DAG = {
+  runId: 'run-dag',
+  current: true,
+  subject: '依赖图',
+  pathLabel: '完整',
+  phase: 'running',
+  steps: [
+    { id: 'a', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
+    { id: 'b', role: 'architect', roleName: '架构师', status: 'done', deps: ['a'] },
+    { id: 'c', role: 'ui-designer', roleName: 'UI 设计师', status: 'done', deps: ['a'] },
+    { id: 'd', role: 'executor', roleName: '开发执行者', status: 'done', deps: ['b'], childId: 'child-d' },
+    { id: 'e', role: 'test-engineer', roleName: '测试工程师', status: 'running', deps: ['b', 'c'] },
+    { id: 'f', role: 'critic', roleName: '批判者', status: 'blocked', deps: ['c'] },
+    { id: 'g', role: 'code-reviewer', roleName: '代码审查员', status: 'pending', deps: ['d', 'e'] },
+    { id: 'h', role: 'security-reviewer', roleName: '安全审查员', status: 'pending', deps: ['e', 'f'] },
+    { id: 'i', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['g', 'h'] },
+  ],
+};
+
+/** 挂载一张依赖图（默认 900px 宽，走曲线视图）。 */
+async function mountDag(run = FLOW_DAG, { width = 900, uiWorkspace = undefined } = {}) {
+  const { React, workspace } = await mountTeamWorkspace({ uiWorkspace });
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox, run);
+  return { React, workspace, flowBox: mountFlow(React, runBox, { width }) };
+}
+
+/** 取某步骤的 FlowCard 渲染树。 */
+function cardOf(flowBox, id) {
+  return renderCard(flowBox, id);
+}
+
+/** 取详情面板四个字段的 [label, value]。 */
+function detailFields(detail) {
+  return collect(detail, (node) => node.props?.className === 'dsh-teams-flow-detail-item').map((field) => [
+    collect(field, (node) => node.props?.className === 'dsh-teams-flow-detail-label')[0].children[0],
+    collect(field, (node) => node.props?.className === 'dsh-teams-flow-detail-value')[0].children[0],
+  ]);
+}
+
+function edgePaths(flowBox) {
+  const node = componentNamed(flowBox.tree, 'FlowEdges');
+  if (node === undefined) return [];
+  const svg = renderDirect(node);
+  return collect(svg, (item) => item.type === 'path' && item.props?.className === 'dsh-teams-flow-edge');
+}
+
+/** FlowEdges 是子组件（假 React 不递归渲染），要手动展开才能拿到 SVG。 */
+function flowSvg(flowBox) {
+  const node = componentNamed(flowBox.tree, 'FlowEdges');
+  return node === undefined ? undefined : renderDirect(node);
+}
+
+/** 绝对定位节点的像素坐标（id / left / top），用于独立验算布局与曲线锚点。 */
+function nodeRects(flowBox) {
+  return collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node').map((node) => {
+    const card = node.children[0];
+    return { id: card.props.step.id, left: node.props.style.left, top: node.props.style.top };
+  });
+}
+
+test('依赖图：真 SVG 贝塞尔连接 9 节点，分层坐标不重叠也不越界', async () => {
+  const { flowBox } = await mountDag();
+  assert.equal(flowBox.tree.props['data-mode'], 'graph', '宽面板画曲线');
+  const canvas = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
+  assert.ok(canvas, '应有绝对定位画布');
+  // 5 层 × 116 + 4 × 56 = 804；3 行 × 180 + 2 × 10 = 560
+  assert.equal(canvas.props.style.width, 804);
+  assert.equal(canvas.props.style.height, 560);
+
+  const nodes = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node');
+  assert.equal(nodes.length, 9, '9 个节点都要渲染');
+  const rects = nodes.map((node) => ({
+    left: node.props.style.left,
+    top: node.props.style.top,
+    id: node.children[0].props.step.id,
+  }));
+  for (let i = 0; i < rects.length; i += 1) {
+    for (let j = i + 1; j < rects.length; j += 1) {
+      const overlapX = rects[i].left < rects[j].left + 116 && rects[j].left < rects[i].left + 116;
+      const overlapY = rects[i].top < rects[j].top + 180 && rects[j].top < rects[i].top + 180;
+      assert.ok(!(overlapX && overlapY), `${rects[i].id} 与 ${rects[j].id} 的卡片不应重叠`);
+    }
+  }
+  const columns = [...new Set(rects.map((rect) => rect.left))].sort((a, b) => a - b);
+  assert.deepEqual(columns, [0, 172, 344, 516, 688], '列 = 层级，列距 116+56');
+  assert.equal(Math.max(...rects.map((rect) => rect.left)) + 116, 804, '最右卡片不越界');
+  assert.equal(Math.max(...rects.map((rect) => rect.top)) + 180, 560, '最下卡片不越界');
+
+  const svg = flowSvg(flowBox);
+  assert.ok(svg, '曲线层必须是真 SVG');
+  assert.equal(svg.props['aria-hidden'], 'true', '曲线是装饰层，不抢读屏');
+  const paths = edgePaths(flowBox);
+  assert.equal(paths.length, 12, '12 条依赖边（去重、未知/自依赖不画）');
+  for (const path of paths) {
+    assert.match(path.props.d, /^M\d+ \d+ C\d+ \d+ \d+ \d+ \d+ \d+$/, '每条边是横向 C 贝塞尔');
+    assert.match(path.props.markerEnd, /^url\(#dsh-teams-flow-run-dag-arrow/, '每条边带箭头');
+  }
+  const markers = collect(svg, (node) => node.type === 'marker');
+  assert.equal(markers.length, 2, '普通/高亮两份箭头定义');
+
+  const card = cardOf(flowBox, 'a');
+  assert.equal(card.props.role, 'button');
+  assert.equal(card.props['data-step-id'], 'a');
+  assert.equal(card.props.tabIndex, 0, '默认第一个节点进 Tab 顺序');
+  assert.equal(card.props['aria-pressed'], 'false');
+});
+
+test('依赖图：悬停高亮完整上下游链（上溯到根、下溯到叶），其余降透明度', async () => {
+  const { flowBox } = await mountDag();
+  const cardE = collect(
+    flowBox.tree,
+    (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'e',
+  )[0];
+  cardE.props.onHover('e');
+
+  const cards = collect(flowBox.tree, (node) => node.type?.name === 'FlowCard');
+  const stateOf = (id) => cards.find((node) => node.props.step.id === id).props;
+  // e 的前置 b、c 与 b/c 的前置 a 都要亮；下游 g、h 与 g/h 的下游 i 也要亮
+  for (const id of ['a', 'b', 'c', 'e', 'g', 'h', 'i']) {
+    assert.equal(stateOf(id).highlighted, true, `${id} 在上下游链上应高亮`);
+    assert.equal(stateOf(id).dimmed, false);
+  }
+  // d、f 与 e 的链路无关，只淡化
+  for (const id of ['d', 'f']) {
+    assert.equal(stateOf(id).dimmed, true, `${id} 不在链上应淡化`);
+    assert.equal(stateOf(id).highlighted, false);
+  }
+  const paths = edgePaths(flowBox);
+  assert.equal(paths.filter((path) => path.props['data-active'] === 'true').length, 8, '链上的 8 条边高亮');
+  assert.equal(paths.filter((path) => path.props['data-dim'] === 'true').length, 4, '其余 4 条边淡化');
+  for (const path of paths.filter((item) => item.props['data-active'] === 'true')) {
+    assert.match(path.props.markerEnd, /-arrow-on/, '高亮边用高亮箭头');
+  }
+
+  cardE.props.onHover(undefined);
+  assert.equal(
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard').some((node) => node.props.dimmed),
+    false,
+    '鼠标离开后清除预览',
+  );
+});
+
+test('依赖图：点击钉住显示负责人/未满足前置/下游解锁/模型，Esc 或点空白取消', async () => {
+  const { flowBox } = await mountDag();
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'e')[0].props.onPin('e');
+
+  let detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.ok(detail, '钉住后展开详情');
+  assert.equal(detail.props.role, 'region');
+  assert.equal(detail.props['aria-live'], 'polite');
+  assert.deepEqual(detailFields(detail), [
+    ['flow.detail.owner', '测试工程师'],
+    ['flow.detail.unmet', 'flow.detail.unmetNone'],
+    ['flow.detail.unlocked', '代码审查员'],
+    ['flow.detail.model', '—'],
+  ]);
+  assert.equal(cardOf(flowBox, 'e').props['aria-pressed'], 'true');
+  assert.equal(cardOf(flowBox, 'e').props['aria-controls'], detail.props.id);
+
+  // 换钉 h：未满足前置是 e、f，下游暂时没有
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'h')[0].props.onPin('h');
+  detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.deepEqual(detailFields(detail), [
+    ['flow.detail.owner', '安全审查员'],
+    ['flow.detail.unmet', '测试工程师、批判者'],
+    ['flow.detail.unlocked', 'flow.detail.unlockedNone'],
+    ['flow.detail.model', '—'],
+  ]);
+
+  // Esc 取消
+  const esc = { key: 'Escape', prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() {} };
+  flowBox.tree.props.onKeyDown(esc);
+  assert.equal(esc.stopped, true);
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, 'Esc 取消钉住');
+
+  // 再钉一次，点空白取消（卡片点击会冒泡到根，不能误清）
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'g')[0].props.onPin('g');
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'));
+  const rootProps = flowBox.tree.props;
+  const fakeRoot = { className: 'dsh-teams-flow' };
+  rootProps.onClick({ target: { className: 'dsh-teams-flow-canvas' }, currentTarget: fakeRoot });
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '点空白取消钉住');
+});
+
+test('依赖图：Tab 进每个节点、Enter 钉住，焦点态有可见描边', async () => {
+  const { flowBox } = await mountDag();
+  const tabIndexes = collect(flowBox.tree, (node) => node.type?.name === 'FlowCard').map((node) => [
+    node.props.step.id,
+    node.props.tabIndex,
+  ]);
+  assert.equal(tabIndexes.length, 9);
+  assert.deepEqual(
+    tabIndexes.filter(([, tabIndex]) => tabIndex !== 0),
+    [],
+    'Tab 应能逐个进入 9 个节点（都是 0）',
+  );
+
+  // 方向键是额外便利：左右跨层、上下同层，最后仍停在合法节点上（不崩）
+  cardOf(flowBox, 'a').props.onKeyDown({ key: 'ArrowRight', preventDefault() {} });
+  assert.doesNotThrow(() => cardOf(flowBox, 'b').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} }));
+  assert.doesNotThrow(() => cardOf(flowBox, 'a').props.onKeyDown({ key: 'ArrowUp', preventDefault() {} }));
+
+  const enter = { key: 'Enter', preventDefault() {} };
+  cardOf(flowBox, 'b').props.onKeyDown(enter);
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), 'Enter 钉住并展开详情');
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /dsh-teams-flow-card\[data-clickable="true"\]:focus-visible\{outline:2px/,
+    '焦点态要有描边，不能只靠颜色');
+  assert.match(source, /dsh-teams-flow-list-main:focus-visible\{outline:2px/, '列表行焦点也要可见');
+});
+
+test('依赖图：360px 窄面板退回列表，不渲染曲线与绝对定位节点', async () => {
+  const { flowBox } = await mountDag(FLOW_DAG, { width: 360 });
+  assert.equal(flowBox.tree.props['data-mode'], 'list');
+  assert.equal(componentNamed(flowBox.tree, 'FlowEdges'), undefined, '列表不挂曲线层');
+  assert.equal(collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node').length, 0);
+  const list = renderDirect(componentNamed(flowBox.tree, 'FlowList'));
+  const rows = collect(list, (node) => node.props?.className === 'dsh-teams-flow-list-row');
+  assert.equal(rows.length, 9, '列表一行一步');
+
+  const main = collect(list, (node) => node.props?.className === 'dsh-teams-flow-list-main')[0];
+  assert.equal(main.props.role, 'button');
+  assert.equal(main.props['data-status'], 'done');
+  const depText = collect(
+    rows[4],
+    (node) => node.props?.className === 'dsh-teams-flow-list-deps',
+  )[0].children[0];
+  assert.equal(depText, 'task.deps：架构师、UI 设计师', '列表直接读得懂谁卡谁');
+  const sessionButton = collect(rows[3], (node) => node.type === 'button')[0];
+  assert.equal(sessionButton.props.disabled, true, '没有宿主能力时会话按钮禁用');
+  assert.equal(sessionButton.props.title, 'session.unavailable');
+
+  main.props.onClick();
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '列表视图也能钉住看详情');
+});
+
+test('依赖图降级：空图 / 单节点 / 环 / 悬空依赖都不崩', async () => {
+  // 空图：只给空态，不建 SVG 与详情
+  const empty = await mountDag({ ...FLOW_DAG, runId: 'run-empty', steps: [] });
+  assert.equal(empty.flowBox.tree.props.className, 'dsh-teams-muted');
+  assert.equal(empty.flowBox.tree.children[0], 'flow.empty');
+
+  // 单节点：一个卡片，没有边
+  const single = await mountDag({
+    ...FLOW_DAG,
+    runId: 'run-single',
+    steps: [{ id: 'a', role: 'executor', roleName: '开发执行者', status: 'pending', deps: [] }],
+  });
+  assert.equal(collect(single.flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node').length, 1);
+  assert.equal(edgePaths(single.flowBox).length, 0);
+
+  // 环：仍能画出两个节点（不递归爆栈、不白屏）
+  const cycle = await mountDag({
+    ...FLOW_DAG,
+    runId: 'run-cycle',
+    steps: [
+      { id: 'x', role: 'executor', roleName: '开发执行者', status: 'running', deps: ['y'] },
+      { id: 'y', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['x'] },
+    ],
+  });
+  assert.equal(collect(cycle.flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node').length, 2);
+  assert.doesNotThrow(() => cardOf(cycle.flowBox, 'x').props.onClick());
+
+  // 悬空依赖：不画线；详情把它算成未满足前置
+  const dangling = await mountDag({
+    ...FLOW_DAG,
+    runId: 'run-dangling',
+    steps: [
+      { id: 'a', role: 'executor', roleName: '开发执行者', status: 'done', deps: ['ghost'] },
+      { id: 'b', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['a'] },
+    ],
+  });
+  assert.equal(edgePaths(dangling.flowBox).length, 1, '只画 a→b，悬空的 ghost 被忽略');
+  cardOf(dangling.flowBox, 'a').props.onClick();
+  const detail = renderDirect(componentNamed(dangling.flowBox.tree, 'FlowDetail'));
+  assert.equal(detailFields(detail)[1][1], 'ghost', '悬空依赖如实显示，不假装已满足');
+});
+
+test('依赖图：648/804px 进图模式，详情在横向滚动视口之外（滚到最右仍可见）', async () => {
+  for (const width of [648, 804]) {
+    const { flowBox } = await mountDag(FLOW_DAG, { width });
+    assert.equal(flowBox.tree.props['data-mode'], 'graph', `${width}px 仍画图`);
+    const viewport = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-viewport')[0];
+    assert.ok(viewport, '横向滚动应隔离到独立视口');
+    const canvas = collect(viewport, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
+    assert.equal(canvas.props.style.width, 804, '5 层画布宽 804，超过 648 面板宽，必然横向滚动');
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'g')[0].props.onPin('g');
+    const detail = collect(flowBox.tree, (node) => node.type?.name === 'FlowDetail')[0];
+    assert.ok(detail, '钉住后详情仍挂载');
+    assert.equal(
+      collect(viewport, (node) => node.type?.name === 'FlowDetail').length,
+      0,
+      '详情不能在滚动视口内，否则向右滚会把「负责人」滚出视野',
+    );
+    assert.ok((flowBox.tree.children ?? []).includes(detail), '详情是画布容器的直接子节点');
+  }
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-flow\{position:relative;padding:8px 6px 16px;\}/, '根容器不再承担横向滚动');
+  assert.match(
+    source,
+    /\.dsh-teams-flow-viewport\{overflow-x:auto;overflow-y:hidden;\}/,
+    '只有视口横向滚动',
+  );
+});
+
+test('依赖图：快照带 model 时显示任务模型，缺失时显示 —', async () => {
+  const run = {
+    ...FLOW_DAG,
+    runId: 'run-model',
+    steps: FLOW_DAG.steps.map((step) => (step.id === 'i' ? { ...step, model: 'deepseek-v4.1-flash' } : step)),
+  };
+  const { flowBox } = await mountDag(run);
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'i')[0].props.onPin('i');
+  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.equal(detailFields(detail)[3][1], 'deepseek-v4.1-flash');
+
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'g')[0].props.onPin('g');
+  const fallback = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.equal(detailFields(fallback)[3][1], '—', '没有 model 字段时如实显示 —');
+});
+
+test('依赖图：详情补失败原因；读屏「直接下游」与详情「下游解锁」口径分开', async () => {
+  const run = {
+    ...FLOW_DAG,
+    runId: 'run-failure',
+    steps: FLOW_DAG.steps.map((step) =>
+      step.id === 'e' ? { ...step, failure: '断言失败：退出码 1' } : step,
+    ),
+  };
+  const { flowBox } = await mountDag(run);
+
+  // d 的直接下游是 g；g 还等 e，详情不能说「解锁」，读屏也不能说「下游解锁」
+  const label = cardOf(flowBox, 'd').props['aria-label'];
+  assert.match(label, /flow\.directDownstream 1/, '读屏改用「直接下游」');
+  assert.ok(!label.includes('flow.detail.unlocked'), '读屏口径不能与详情「下游解锁」冲突');
+  const pin = (id) =>
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id)[0].props.onPin(id);
+  pin('d');
+  let detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.equal(detailFields(detail)[2][1], 'flow.detail.unlockedNone', 'g 还有未满足前置，不算解锁');
+
+  pin('e');
+  detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  const failure = collect(detail, (node) => node.props?.className === 'dsh-teams-flow-detail-failure')[0];
+  assert.ok(failure, '运行视图要能看到失败原因（卡片 title 已让位给钉住提示）');
+  assert.equal(failure.children[0], 'flow.detail.failure：断言失败：退出码 1');
+});
+
+test('依赖图：拓扑分层严格——每条依赖都在更早列，层号=最长路径，同层顺序与输入顺序无关', async () => {
+  const { flowBox } = await mountDag();
+  const rects = nodeRects(flowBox);
+  const rectById = new Map(rects.map((rect) => [rect.id, rect]));
+  const colOf = (id) => {
+    const left = rectById.get(id)?.left;
+    assert.equal(typeof left, 'number', `${id} 应有像素坐标`);
+    assert.equal(left % 172, 0, `${id} 的列距应为 116+56`);
+    return left / 172;
+  };
+  for (const step of FLOW_DAG.steps) {
+    const expected = step.deps.length === 0 ? 0 : Math.max(...step.deps.map((dep) => colOf(dep))) + 1;
+    assert.equal(colOf(step.id), expected, `${step.id} 的层级应等于最长前置路径，不是随便排的`);
+    for (const dep of step.deps) assert.ok(colOf(dep) < colOf(step.id), `${dep} 必须画在 ${step.id} 左边`);
+  }
+  const columns = [...new Set(rects.map((rect) => colOf(rect.id)))].sort((a, b) => a - b);
+  assert.deepEqual(columns, [0, 1, 2, 3, 4], '层号连续，不留空列');
+  for (const col of columns) {
+    const rows = rects
+      .filter((rect) => colOf(rect.id) === col)
+      .map((rect) => rect.top / 190)
+      .sort((a, b) => a - b);
+    assert.deepEqual(rows, rows.map((_, index) => index), `第 ${col} 层行号应为 0..n-1，不重叠`);
+  }
+
+  // 同层稳定排序：把 steps 倒序输入，坐标必须完全不变
+  const reversed = await mountDag({ ...FLOW_DAG, runId: 'run-dag-rev', steps: [...FLOW_DAG.steps].reverse() });
+  for (const rect of nodeRects(reversed)) {
+    const original = rectById.get(rect.id);
+    assert.equal(`${rect.left},${rect.top}`, `${original.left},${original.top}`, `倒序输入后 ${rect.id} 的坐标应稳定`);
+  }
+});
+
+test('依赖图：12 条曲线都锚在源卡右中点与目标卡左中点，控制点只向右推进', async () => {
+  const { flowBox } = await mountDag();
+  const rects = nodeRects(flowBox);
+  const paths = edgePaths(flowBox);
+  assert.equal(paths.length, 12);
+  const pairs = new Set();
+  for (const path of paths) {
+    const match = /^M(\d+) (\d+) C(\d+) (\d+) (\d+) (\d+) (\d+) (\d+)$/.exec(path.props.d);
+    assert.ok(match, `曲线必须是一次 C 贝塞尔：${path.props.d}`);
+    const [x1, y1, cx1, cy1, cx2, cy2, x2, y2] = match.slice(1).map(Number);
+    const from = rects.find((rect) => rect.left + 116 === x1 && rect.top + 90 === y1);
+    const to = rects.find((rect) => rect.left - 2 === x2 && rect.top + 90 === y2);
+    assert.ok(from, `起点应是某张卡的右中点：${x1},${y1}`);
+    assert.ok(to, `终点应是目标卡左中点偏 2px（给箭头留位）：${x2},${y2}`);
+    assert.ok(to.left > from.left, `${from.id} → ${to.id} 必须从左向右`);
+    assert.ok(cx1 > x1 && cx2 < x2, '控制点沿水平方向外推，才是横向 C 曲线');
+    assert.equal(cy1, y1, '起点切线水平');
+    assert.equal(cy2, y2, '终点切线水平');
+    assert.equal(cx1 - x1, x2 - cx2, '两侧弯折量对称');
+    assert.ok(cx1 - x1 >= 10 && cx1 - x1 <= 28, '弯折量在通道内，不穿卡片');
+    const pair = `${from.id}->${to.id}`;
+    assert.ok(!pairs.has(pair), `依赖边不得重复：${pair}`);
+    pairs.add(pair);
+  }
+});
+
+test('依赖图：SVG 曲线画在节点之下，且不拦截指针事件', async () => {
+  const { flowBox } = await mountDag();
+  const canvas = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
+  const kinds = canvas.children.map((child) => {
+    if (child.type?.name === 'FlowEdges') return 'edges';
+    if (child.props?.className === 'dsh-teams-flow-node') return 'node';
+    return 'other';
+  });
+  assert.equal(kinds[0], 'edges', '曲线层先于节点渲染，天然垫底');
+  assert.ok(kinds.slice(1).every((kind) => kind === 'node'), '曲线之后只应有节点');
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-flow-canvas\{[^}]*position:relative;/, '节点绝对定位需相对画布');
+  assert.match(source, /\.dsh-teams-flow-edges\{[^}]*z-index:0;[^}]*pointer-events:none;/, '曲线层 z-index 0 且不吃点击');
+  assert.match(source, /\.dsh-teams-flow-node\{[^}]*z-index:1;/, '节点 z-index 1，压在曲线之上');
+});
+
+test('依赖图：上下游链只亮真实祖先/后代（兄弟前置不亮），聚焦同悬停，钉住后悬停不夺链', async () => {
+  const { flowBox } = await mountDag();
+  const cardById = (id) =>
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id)[0];
+  const states = () =>
+    new Map(collect(flowBox.tree, (node) => node.type?.name === 'FlowCard').map((node) => [node.props.step.id, node.props]));
+  const edgeCount = (key) => edgePaths(flowBox).filter((path) => path.props[key] === 'true').length;
+
+  // d 的链：祖先 a、b；自己；下游 g、i。c/e/f/h 不是 d 的祖先或后代（e 只是 g 的另一个前置）
+  cardById('d').props.onHover('d');
+  let state = states();
+  for (const id of ['a', 'b', 'd', 'g', 'i']) assert.equal(state.get(id).highlighted, true, `${id} 在 d 的链上`);
+  for (const id of ['c', 'e', 'f', 'h']) {
+    assert.equal(state.get(id).highlighted, false, `${id} 不在 d 的链上`);
+    assert.equal(state.get(id).dimmed, true, `${id} 应淡化`);
+  }
+  assert.equal(edgeCount('data-active'), 4, '链上只有 a→b→d→g→i 的 4 条边');
+  assert.equal(edgeCount('data-dim'), 8, '其余 8 条边淡化');
+  cardById('d').props.onHover(undefined);
+  assert.equal(edgeCount('data-dim'), 0, '离开后恢复常态');
+
+  // 键盘聚焦走同一条预览路径
+  cardById('d').props.onFocusNode();
+  assert.equal(states().get('d').highlighted, true, '聚焦应高亮自身链');
+  assert.equal(states().get('f').dimmed, true);
+  cardById('d').props.onBlurNode('d');
+
+  // 钉住 e 后再悬停 d：链必须是 e 的（d/f 仍淡化）
+  cardById('e').props.onPin('e');
+  cardById('d').props.onHover('d');
+  state = states();
+  assert.equal(state.get('e').highlighted, true);
+  assert.equal(state.get('e').pinned, true);
+  assert.equal(state.get('d').dimmed, true, '钉住优先，悬停不得夺链');
+  assert.equal(state.get('f').dimmed, true);
+  assert.equal(edgeCount('data-active'), 8, 'e 的链上 8 条边（含 g/h 两条汇入 i）');
+});
+
+test('依赖图：鼠标离开别的卡片不清键盘焦点链，聚焦优先于悬停', async () => {
+  const { flowBox } = await mountDag();
+  const cardById = (id) =>
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id)[0];
+  const stateOf = (id) => cardById(id).props;
+
+  cardById('d').props.onFocusNode();
+  assert.equal(stateOf('d').highlighted, true, '聚焦 d 高亮 d 的链');
+  assert.equal(stateOf('c').dimmed, true);
+
+  // 鼠标扫过 c 再离开：焦点在 d，链路不能被 hover 覆盖或清空（分源的回归）
+  cardById('c').props.onHover('c');
+  assert.equal(stateOf('d').highlighted, true, '悬停不得夺走键盘焦点的链');
+  assert.equal(stateOf('c').dimmed, true, '焦点优先于悬停');
+  cardById('c').props.onHover(undefined);
+  assert.equal(stateOf('d').highlighted, true, '鼠标离开别的卡片不得清掉焦点链');
+  assert.equal(stateOf('c').dimmed, true);
+  assert.equal(stateOf('g').highlighted, true, 'd 的下游仍在链上');
+
+  cardById('d').props.onBlurNode('d');
+  assert.equal(stateOf('d').highlighted, false, '失焦后恢复常态');
+  assert.equal(stateOf('c').dimmed, false);
+});
+
+test('依赖图：再次点击/关闭按钮/空白都能取消钉住，点卡片不误清', async () => {
+  const { flowBox } = await mountDag();
+  const pin = (id) =>
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id)[0].props.onPin(id);
+
+  pin('d');
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'));
+  pin('d');
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '同一节点再次点击应取消钉住');
+
+  pin('d');
+  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  const close = collect(detail, (node) => node.props?.className === 'dsh-teams-flow-detail-close')[0];
+  assert.ok(close, '详情应有取消按钮');
+  close.props.onClick();
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '关闭按钮取消钉住');
+
+  pin('d');
+  const root = flowBox.tree;
+  const currentTarget = { className: 'dsh-teams-flow' };
+  root.props.onClick({ target: { className: 'dsh-teams-flow-card' }, currentTarget });
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '点卡片冒泡到根不得误清');
+  root.props.onClick({ target: currentTarget, currentTarget });
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '点空白取消钉住');
+  assert.equal(
+    renderCard(flowBox, 'd').props['aria-pressed'],
+    'false',
+    '取消后 aria-pressed 复位',
+  );
+});
+
+test('依赖图：会话入口移入详情后仍走宿主异常兜底，点击不抛错', async () => {
+  const { flowBox } = await mountDag(FLOW_DAG, {
+    uiWorkspace: {
+      openSession() {
+        throw new Error('host open failed');
+      },
+    },
+  });
+  collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'd')[0].props.onPin('d');
+  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
+  const open = collect(detail, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-detail-open'))[0];
+  assert.ok(open, '详情应有会话入口');
+  assert.equal(open.props.disabled, false, 'd 有 childId，应可点');
+  assert.doesNotThrow(() => open.props.onClick(), '宿主 openSession 抛错不得冒到 React');
+});
+
+test('依赖图：文档级 Esc 取消钉住，但已被确认框 preventDefault 的 Esc 让位', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox, FLOW_DAG);
+  let flowBox;
+  React.withEffects(() => {
+    flowBox = mountFlow(React, runBox, { width: undefined });
+  });
+  // 首帧没有注入宽度，按容器实测：给替身一个 900px 宽的根节点
+  flowBox.tree.props.ref.current = { clientWidth: 900 };
+  React.flushEffects();
+  assert.equal(flowBox.tree.props['data-mode'], 'graph');
+
+  const enterPin = () =>
+    React.withEffects(() => {
+      collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'e')[0].props.onPin('e');
+    });
+  enterPin();
+  React.flushEffects();
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'));
+  assert.equal(
+    globalThis.document.dispatch('keydown', { key: 'Escape', defaultPrevented: false }),
+    true,
+    '钉住后应挂文档级 Esc 监听',
+  );
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, 'Esc 取消钉住');
+
+  enterPin();
+  React.flushEffects();
+  globalThis.document.dispatch('keydown', { key: 'Escape', defaultPrevented: true });
+  assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '已 preventDefault 的 Esc 属于停止确认框，不得抢');
+});
+
+test('依赖图：窄于 640px 自动退回列表——边界 639/640，宽度来自容器实测', async () => {
+  const narrow = await mountDag(FLOW_DAG, { width: 639 });
+  assert.equal(narrow.flowBox.tree.props['data-mode'], 'list', '639px 应降级');
+  assert.equal(componentNamed(narrow.flowBox.tree, 'FlowEdges'), undefined);
+  const wide = await mountDag(FLOW_DAG, { width: 640 });
+  assert.equal(wide.flowBox.tree.props['data-mode'], 'graph', '640px 仍可画图，边界不倒置');
+
+  // 不注入 width，走真实测量路径：effect 读容器 clientWidth，ResizeObserver 跟随时变宽度
+  const realResizeObserver = globalThis.ResizeObserver;
+  class FakeResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      FakeResizeObserver.last = this;
+    }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = FakeResizeObserver;
+  try {
+    const { React, workspace } = await mountTeamWorkspace();
+    const runsBox = mountRunsView(React, workspace);
+    const runBox = mountRunItem(React, runsBox, FLOW_DAG);
+    let flowBox;
+    React.withEffects(() => {
+      flowBox = mountFlow(React, runBox, { width: undefined });
+    });
+    const root = { clientWidth: 900 };
+    flowBox.tree.props.ref.current = root;
+    React.flushEffects();
+    assert.equal(flowBox.tree.props['data-mode'], 'graph', '宽度未知先按宽屏');
+    assert.ok(FakeResizeObserver.last, '应订阅容器尺寸变化');
+
+    root.clientWidth = 480;
+    FakeResizeObserver.last.callback();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(flowBox.tree.props['data-mode'], 'list', '拖窄到 480px 后自动降级（100ms 节流后）');
+    const list = renderDirect(componentNamed(flowBox.tree, 'FlowList'));
+    assert.equal(collect(list, (node) => node.props?.className === 'dsh-teams-flow-list-row').length, 9);
+  } finally {
+    if (realResizeObserver === undefined) delete globalThis.ResizeObserver;
+    else globalThis.ResizeObserver = realResizeObserver;
+  }
+});
+
+test('依赖图：详情「下游解锁」不把还有其它未满足前置的下游算进去', async () => {
+  const { flowBox } = await mountDag();
+  const pin = (id) =>
+    collect(flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id)[0].props.onPin(id);
+  const fields = () => detailFields(renderDirect(componentNamed(flowBox.tree, 'FlowDetail')));
+
+  pin('a');
+  assert.deepEqual(fields(), [
+    ['flow.detail.owner', '需求分析师'],
+    ['flow.detail.unmet', 'flow.detail.unmetNone'],
+    ['flow.detail.unlocked', '架构师、UI 设计师'],
+    ['flow.detail.model', '—'],
+  ]);
+
+  pin('d');
+  assert.deepEqual(fields(), [
+    ['flow.detail.owner', '开发执行者'],
+    ['flow.detail.unmet', 'flow.detail.unmetNone'],
+    ['flow.detail.unlocked', 'flow.detail.unlockedNone'],
+    ['flow.detail.model', '—'],
+  ], 'g 还等 e，不能算作 d 解锁的下游');
+
+  pin('g');
+  assert.deepEqual(fields(), [
+    ['flow.detail.owner', '代码审查员'],
+    ['flow.detail.unmet', '测试工程师'],
+    ['flow.detail.unlocked', 'flow.detail.unlockedNone'],
+    ['flow.detail.model', '—'],
+  ], '未满足前置按真实状态给，i 还等 h');
+});
+
+test('依赖图：不引入图表/布局库，客户端只 require react', async () => {
+  const pkg = JSON.parse(await readFile(join(PACKAGE_DIR, 'package.json'), 'utf8'));
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), [], '不允许新增运行时依赖');
+  assert.deepEqual(Object.keys(pkg.devDependencies ?? {}), [], '不允许新增测试依赖');
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  const requires = [...new Set([...source.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((match) => match[1]))];
+  assert.deepEqual(requires, ['react'], '客户端只允许 require react');
 });
 
 test('停止请求：确认后真实 POST 到插件路由并携带队长会话；403/503 是灰字不可重试', async () => {

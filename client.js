@@ -75,6 +75,19 @@ window.__ModuleLoader__.load({
       'flow.current': '当前',
       'flow.untitled': '（未命名任务）',
       'flow.more': '显示更早的 {n} 轮',
+      'flow.graphLabel': '依赖图：{n} 个任务',
+      'flow.pin': '钉住并查看详情',
+      'flow.unpin': '取消钉住',
+      'flow.detail.title': '任务详情',
+      'flow.detail.owner': '负责人',
+      'flow.detail.unmet': '未满足前置',
+      'flow.detail.unlocked': '下游解锁',
+      'flow.detail.model': '模型',
+      'flow.detail.unmetNone': '前置已满足',
+      'flow.detail.unlockedNone': '暂无下游',
+      'flow.detail.open': '打开会话',
+      'flow.detail.failure': '失败原因',
+      'flow.directDownstream': '直接下游',
 
       'watch.harvested': '回收',
       'watch.cancelled': '已取消',
@@ -273,6 +286,19 @@ window.__ModuleLoader__.load({
       'flow.current': 'current',
       'flow.untitled': '(untitled task)',
       'flow.more': 'Show {n} earlier runs',
+      'flow.graphLabel': 'Dependency graph: {n} tasks',
+      'flow.pin': 'Pin and show details',
+      'flow.unpin': 'Unpin',
+      'flow.detail.title': 'Task details',
+      'flow.detail.owner': 'Owner',
+      'flow.detail.unmet': 'Blocking deps',
+      'flow.detail.unlocked': 'Unlocks',
+      'flow.detail.model': 'Model',
+      'flow.detail.unmetNone': 'All deps satisfied',
+      'flow.detail.unlockedNone': 'Nothing yet',
+      'flow.detail.open': 'Open session',
+      'flow.detail.failure': 'Failure reason',
+      'flow.directDownstream': 'Direct downstream',
 
       'watch.harvested': 'recovered',
       'watch.cancelled': 'cancelled',
@@ -677,15 +703,18 @@ window.__ModuleLoader__.load({
   animation:dsh-teams-shimmer 1.6s linear infinite;}
 @keyframes dsh-teams-shimmer{from{background-position:200% 0;}to{background-position:-100% 0;}}
 
-/* 流程图 */
+/* 流程图：绝对定位节点画布 + 单层像素坐标 SVG 曲线（viewBox 与像素 1:1，箭头不变形） */
 /* 流程图区不垫底色：运行卡本身已是 bg-layer-1，重复垫一层等于没垫（设计师实测指出） */
-.dsh-teams-flow{display:flex;align-items:stretch;overflow-x:auto;padding:8px 6px 16px;
-  /* 右侧渐隐：用令牌而不是 hex（hex 会被主题令牌测试抓） */
-  -webkit-mask-image:linear-gradient(90deg,var(--dsw-alias-label-primary) 0 96%,transparent);
-  mask-image:linear-gradient(90deg,var(--dsw-alias-label-primary) 0 96%,transparent);}
-.dsh-teams-flow-col{display:flex;flex-direction:column;gap:10px;justify-content:center;flex:none;}
-.dsh-teams-flow-gap{flex:none;width:18px;align-self:stretch;
-  color:var(--dsw-alias-label-secondary);opacity:.75;}
+.dsh-teams-flow{position:relative;padding:8px 6px 16px;}
+/* 只有画布横向滚动：详情在滚动容器之外，向右滚也不会把「负责人」滚出视野 */
+.dsh-teams-flow-viewport{overflow-x:auto;overflow-y:hidden;}
+.dsh-teams-flow-canvas{position:relative;flex:none;}
+.dsh-teams-flow-node{position:absolute;z-index:1;}
+.dsh-teams-flow-edges{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:visible;}
+.dsh-teams-flow-edge{fill:none;stroke:var(--dsw-alias-label-secondary);stroke-width:1;opacity:.45;
+  transition:opacity .15s ease,stroke .15s ease;}
+.dsh-teams-flow-edge[data-active="true"]{stroke:var(--dsw-alias-brand-primary);stroke-width:1.5;opacity:.9;}
+.dsh-teams-flow-edge[data-dim="true"]{opacity:.12;}
 .dsh-teams-run[data-phase="running"] .dsh-teams-run-bar > i{background:var(--dsw-alias-brand-primary);}
 @media (prefers-reduced-motion:reduce){
   .dsh-teams-flow-glow,.dsh-teams-skeleton > span::after,
@@ -782,6 +811,13 @@ window.__ModuleLoader__.load({
   box-shadow:0 1px 3px color-mix(in srgb,black 12%,transparent);}
 .dsh-teams-flow-card[data-clickable="true"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);
   outline-offset:2px;box-shadow:0 0 0 4px color-mix(in srgb,var(--dsw-alias-brand-primary) 18%,transparent);}
+/* 依赖图状态：钉住 / 上下游链 / 淡化。淡化只退舞台与边框，正文保持对比度。 */
+.dsh-teams-flow-card[data-pinned="true"]{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--dsw-alias-brand-primary) 18%,transparent);}
+.dsh-teams-flow-card[data-chain="true"]:not([data-pinned="true"]){
+  border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 50%,var(--dsw-alias-border-l1));}
+.dsh-teams-flow-card[data-dim="true"] .dsh-teams-flow-stage{opacity:.35;}
+.dsh-teams-flow-card[data-dim="true"] .dsh-teams-flow-glow{display:none;}
 /* 进行中：黄色流光沿边框环绕转动。
    ⚠️ inset 必须是 0：绝对定位的包含块是 padding box，写成 -1.5px 时遮罩保留的环
    正好落在 padding box 之外，会被卡片自己的 overflow:hidden 裁掉 → 流光完全看不见。 */
@@ -800,6 +836,61 @@ window.__ModuleLoader__.load({
 .dsh-teams-flow-card > .dsh-teams-flow-stage,
 .dsh-teams-flow-card > .dsh-teams-flow-info{position:relative;z-index:1;}
 @keyframes dsh-teams-flow-spin{to{transform:rotate(360deg);}}
+/* 依赖图详情：钉住后展开，2×2 四栏（负责人 / 未满足前置 / 下游解锁 / 模型） */
+.dsh-teams-flow-detail{margin-top:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-2);padding:8px 10px;color:var(--dsw-alias-label-primary);}
+.dsh-teams-flow-detail-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.dsh-teams-flow-detail-title{font-size:12px;font-weight:600;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.dsh-teams-flow-detail-status{display:inline-flex;flex:none;}
+.dsh-teams-flow-detail-status .dsh-teams-flow-state{margin-top:0;}
+.dsh-teams-flow-detail-open{margin-left:auto;}
+.dsh-teams-flow-detail-close{flex:none;border:0;background:transparent;cursor:pointer;padding:2px 5px;
+  border-radius:6px;font-size:15px;line-height:1;color:var(--dsw-alias-label-secondary);}
+.dsh-teams-flow-detail-close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);}
+.dsh-teams-flow-detail-close:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
+.dsh-teams-flow-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:8px;}
+.dsh-teams-flow-detail-item{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.dsh-teams-flow-detail-label{font-size:10px;color:var(--dsw-alias-label-secondary);}
+.dsh-teams-flow-detail-value{font-size:11.5px;line-height:1.35;color:var(--dsw-alias-label-primary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dsh-teams-flow-detail-failure{margin-top:6px;padding:5px 8px;border-radius:6px;font-size:11px;
+  line-height:1.35;white-space:pre-wrap;word-break:break-word;
+  border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));
+  color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 65%,var(--dsw-alias-label-primary));}
+/* 窄面板（<640px）退回列表：曲线会压字，列表逐行读更快；详情改单列并可滚动 */
+.dsh-teams-flow[data-mode="list"] .dsh-teams-flow-detail-grid{grid-template-columns:1fr;
+  max-height:120px;overflow-y:auto;}
+.dsh-teams-flow-list{display:flex;flex-direction:column;gap:6px;}
+.dsh-teams-flow-list-row{display:flex;align-items:center;gap:8px;min-width:0;}
+.dsh-teams-flow-list-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1;cursor:pointer;
+  padding:7px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
+  background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:11px;text-align:left;}
+.dsh-teams-flow-list-main:hover{
+  border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 36%,var(--dsw-alias-border-l2));}
+.dsh-teams-flow-list-main:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
+.dsh-teams-flow-list-main[data-pinned="true"]{outline:2px solid var(--dsw-alias-brand-primary);
+  outline-offset:1px;}
+.dsh-teams-flow-list-role{font-weight:600;flex:none;max-width:42%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.dsh-teams-flow-list-deps{flex:1;min-width:0;color:var(--dsw-alias-label-secondary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dsh-teams-flow-list-main .dsh-teams-flow-state{margin-top:0;flex:none;}
+/* 列表/详情里的状态色（卡片那套选择器只作用于 .dsh-teams-flow-card） */
+.dsh-teams-flow-list-main[data-status="done"],.dsh-teams-flow-detail-status[data-status="done"]{
+  --state-color:var(--dsw-alias-state-success-primary);}
+.dsh-teams-flow-list-main[data-status="failed"],.dsh-teams-flow-detail-status[data-status="failed"]{
+  --state-color:var(--dsw-alias-state-error-primary);}
+.dsh-teams-flow-list-main[data-status="blocked"],.dsh-teams-flow-detail-status[data-status="blocked"],
+.dsh-teams-flow-list-main[data-status="running"],.dsh-teams-flow-detail-status[data-status="running"]{
+  --state-color:var(--dsw-alias-state-warn-primary);}
+.dsh-teams-flow-list-main[data-status="ready"],.dsh-teams-flow-detail-status[data-status="ready"]{
+  --state-color:var(--dsw-alias-brand-primary);}
+.dsh-teams-flow-list-main[data-status="pending"],.dsh-teams-flow-detail-status[data-status="pending"],
+.dsh-teams-flow-list-main[data-status="skipped"],.dsh-teams-flow-detail-status[data-status="skipped"]{
+  --state-color:var(--dsw-alias-border-l2);}
+.dsh-teams-flow-list-main .dsh-teams-flow-state,.dsh-teams-flow-detail-status .dsh-teams-flow-state{
+  --state-text:color-mix(in srgb,var(--state-color) 55%,var(--dsw-alias-label-primary));}
 /* 鲸鱼图标 + 装扮挂件 */
 .dsh-teams-whale{position:relative;display:inline-flex;flex:none;align-items:center;justify-content:center;}
 .dsh-teams-whale-accessory{position:absolute;right:-3px;top:-3px;font-size:11px;line-height:1;}
@@ -815,10 +906,8 @@ window.__ModuleLoader__.load({
 .dsh-teams-open{flex:none;color:var(--dsw-alias-label-secondary);font-size:16px;opacity:.45;}
 .dsh-teams-member[data-clickable="true"]:hover .dsh-teams-open{opacity:1;color:var(--dsw-alias-brand-primary);}
 /* 能力缺失时禁用而不是假装可点：cursor + 降透明，点击由「没有 onClick」兜底 */
-.dsh-teams-member[data-disabled="true"],.dsh-teams-flow-card[data-disabled="true"],
-.dsh-teams-task-head[data-disabled="true"]{cursor:not-allowed;}
-.dsh-teams-member[data-disabled="true"] .dsh-teams-open,
-.dsh-teams-flow-card[data-disabled="true"] .dsh-teams-flow-role{opacity:.6;}
+.dsh-teams-member[data-disabled="true"],.dsh-teams-task-head[data-disabled="true"]{cursor:not-allowed;}
+.dsh-teams-member[data-disabled="true"] .dsh-teams-open{opacity:.6;}
 .dsh-teams-task-head[data-clickable="true"]{cursor:pointer;border-radius:6px;}
 .dsh-teams-task-head[data-clickable="true"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);
   outline-offset:2px;}
@@ -1316,7 +1405,14 @@ window.__ModuleLoader__.load({
       return ROLE_LOOKS[role] ?? DEFAULT_LOOK;
     }
 
-    /** 依赖 → 层级（列号）；同列即可并行。 */
+    /* ---------------- 依赖图布局（纯函数：像素坐标 = 列号 × 行号，不测量 DOM） ---------------- */
+    const FLOW_CARD_W = 116; // 与 .dsh-teams-flow-card 的固定尺寸一致
+    const FLOW_CARD_H = 180;
+    const FLOW_GAP_X = 56; // 列间曲线通道（旧折线通道是 18，贝塞尔要空间）
+    const FLOW_GAP_Y = 10; // 同层行距
+    const FLOW_LIST_WIDTH = 640; // 窄于这个宽度曲线会压字，退回列表
+
+    /** 依赖 → 层级（列号）；同层按前驱平均行号 → deps → id 稳定排序。环按 0 层。 */
     function layersOf(steps) {
       const byId = new Map(steps.map((step) => [step.id, step]));
       const depth = new Map();
@@ -1331,53 +1427,234 @@ window.__ModuleLoader__.load({
         return value;
       };
       for (const step of steps) depthOf(step, new Set());
-      const layers = [];
+      // 环可能让最浅的节点不在 0 层（例如 x↔y 得到 1/2）：整体平移，避免空列
+      const knownDepth = steps.map((step) => depth.get(step.id) ?? 0);
+      const baseDepth = knownDepth.length === 0 ? 0 : Math.min(...knownDepth);
+      const raw = [];
       for (const step of steps) {
-        const level = depth.get(step.id) ?? 0;
-        if (layers[level] === undefined) layers[level] = [];
-        layers[level].push(step);
+        const level = (depth.get(step.id) ?? 0) - baseDepth;
+        if (raw[level] === undefined) raw[level] = [];
+        raw[level].push(step);
+      }
+      const layers = [];
+      const rowOf = new Map();
+      // 极端环可能让层号出现空洞：只保留有节点的层，列号因此始终连续
+      for (const layer of raw.filter((item) => Array.isArray(item) && item.length > 0)) {
+        // barycenter：父节点在上一层排第几，决定本节点排第几，跨层边才不交叉
+        const ranked = layer.map((step) => {
+          const parents = (step.deps ?? [])
+            .map((id) => rowOf.get(id))
+            .filter((row) => row !== undefined);
+          return {
+            step,
+            bary: parents.length === 0 ? -1 : parents.reduce((sum, row) => sum + row, 0) / parents.length,
+            deps: [...new Set(step.deps ?? [])].map(String).sort().join(','),
+            id: String(step.id),
+          };
+        });
+        ranked.sort((a, b) => a.bary - b.bary || a.deps.localeCompare(b.deps) || a.id.localeCompare(b.id));
+        const ordered = ranked.map((item) => item.step);
+        ordered.forEach((step, row) => rowOf.set(step.id, row));
+        layers.push(ordered);
       }
       return layers;
     }
 
-    /**
-     * 连接线：从前一列连到本列。
-     *
-     * 用百分比坐标画**折线**（先水平、再垂直、再水平），不测量 DOM——
-     * 同列卡片等高，于是"第 j 张的中心"就是 `(j + 0.5) / count`。
-     * 这样在任何宽度下都连得准，也不会因为重排错位。
-     */
-    function FlowGap({ parents, children }) {
-      const paths = [];
-      children.forEach((step, index) => {
-        const y2 = ((index + 0.5) / children.length) * 100;
-        for (const depId of step.deps ?? []) {
-          const parentIndex = parents.findIndex((item) => item.id === depId);
-          if (parentIndex < 0) continue;
-          const y1 = ((parentIndex + 0.5) / parents.length) * 100;
-          paths.push(
-            h('path', {
-              key: `${depId}->${step.id}`,
-              d: `M0 ${y1} H50 V${y2} H100`,
-              fill: 'none',
-              stroke: 'currentColor',
-              strokeWidth: 1,
-              vectorEffect: 'non-scaling-stroke',
-              opacity: 0.4,
-            }),
-          );
-        }
+    /** 分层结果 → 每个节点的像素坐标 + 画布尺寸 + 每个节点的直接下游数。 */
+    function flowNodes(steps) {
+      const layers = layersOf(steps);
+      const nodeById = new Map();
+      const childCount = new Map();
+      let rows = 0;
+      layers.forEach((layer, col) => {
+        rows = Math.max(rows, layer.length);
+        layer.forEach((step, row) => {
+          nodeById.set(step.id, {
+            step,
+            id: step.id,
+            col,
+            row,
+            x: col * (FLOW_CARD_W + FLOW_GAP_X),
+            y: row * (FLOW_CARD_H + FLOW_GAP_Y),
+            w: FLOW_CARD_W,
+            h: FLOW_CARD_H,
+          });
+        });
       });
-      if (paths.length === 0) return h('span', { className: 'dsh-teams-flow-gap' });
+      for (const step of steps) {
+        for (const depId of new Set(step.deps ?? [])) {
+          if (depId === step.id || !nodeById.has(depId)) continue;
+          childCount.set(depId, (childCount.get(depId) ?? 0) + 1);
+        }
+      }
+      const count = layers.length;
+      return {
+        layers,
+        nodeById,
+        childCount,
+        width: count === 0 ? 0 : count * FLOW_CARD_W + (count - 1) * FLOW_GAP_X,
+        height: rows === 0 ? 0 : rows * FLOW_CARD_H + (rows - 1) * FLOW_GAP_Y,
+      };
+    }
+
+    /** 依赖边：去重、忽略未知/自依赖/同层及反向边（环）——曲线穿过卡片比不画更糟。 */
+    function flowEdges(steps, nodeById) {
+      const edges = [];
+      const seen = new Set();
+      for (const step of steps) {
+        for (const depId of step.deps ?? []) {
+          const from = nodeById.get(depId);
+          const to = nodeById.get(step.id);
+          if (from === undefined || to === undefined || from.id === to.id) continue;
+          if (to.col <= from.col) continue;
+          const key = `${String(depId)}->${String(step.id)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          edges.push({ key, from, to });
+        }
+      }
+      return edges;
+    }
+
+    /** 横向 C 贝塞尔：右中点 → 左中点，控制点各沿水平方向偏 28px。 */
+    function flowEdgePath(from, to) {
+      const x1 = from.x + from.w;
+      const y1 = from.y + from.h / 2;
+      const x2 = to.x - 2; // 箭头尖贴住卡片左边，不盖住边框
+      const y2 = to.y + to.h / 2;
+      const bend = Math.min(28, Math.max(10, (x2 - x1) / 2));
+      return `M${x1} ${y1} C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+    }
+
+    /** 窄面板退回列表；宽度未知时按宽屏（先画图，量到窄再降级）。 */
+    function flowModeFor(width) {
+      return typeof width === 'number' && Number.isFinite(width) && width < FLOW_LIST_WIDTH ? 'list' : 'graph';
+    }
+
+    /** 完整上下游链：上溯到根、下溯到叶（含自身）；环安全。 */
+    function flowChain(steps, id) {
+      const chain = new Set();
+      if (!steps.some((step) => step.id === id)) return chain;
+      const byId = new Map(steps.map((step) => [step.id, step]));
+      const children = new Map();
+      for (const step of steps) {
+        for (const depId of step.deps ?? []) {
+          if (!children.has(depId)) children.set(depId, []);
+          children.get(depId).push(step.id);
+        }
+      }
+      // 上溯只看 deps，下溯只看 children：不能从祖先再走到它的其它子节点
+      for (const walk of ['up', 'down']) {
+        const queue = [id];
+        while (queue.length > 0) {
+          const current = queue.shift();
+          chain.add(current);
+          const nexts = walk === 'up' ? (byId.get(current)?.deps ?? []) : (children.get(current) ?? []);
+          for (const next of nexts) {
+            if (chain.has(next)) continue;
+            chain.add(next);
+            queue.push(next);
+          }
+        }
+      }
+      return chain;
+    }
+
+    const isSettledStep = (step) => step !== undefined && (step.status === 'done' || step.status === 'skipped');
+    const stepLabel = (step) => step.roleName ?? step.role ?? String(step.id);
+
+    /**
+     * 钉住后的详情：负责人 / 未满足前置（done、skipped 之外都算）/ 下游解锁 / 模型。
+     * 快照当前没有 model 字段，缺省显示「—」，不臆造。
+     */
+    function flowDetail(steps, id) {
+      const step = steps.find((item) => item.id === id);
+      if (step === undefined) return undefined;
+      const byId = new Map(steps.map((item) => [item.id, item]));
+      const deps = Array.isArray(step.deps) ? [...new Set(step.deps)] : [];
+      const unmet = [];
+      for (const depId of deps) {
+        const dep = byId.get(depId);
+        if (dep === undefined) unmet.push(String(depId)); // 悬空依赖不可能完成，如实算未满足
+        else if (!isSettledStep(dep)) unmet.push(stepLabel(dep));
+      }
+      const unlocked = [];
+      for (const other of steps) {
+        const otherDeps = Array.isArray(other.deps) ? [...new Set(other.deps)] : [];
+        if (!otherDeps.includes(id)) continue;
+        const blocked = otherDeps.some((depId) => depId !== id && !isSettledStep(byId.get(depId)));
+        if (!blocked) unlocked.push(stepLabel(other));
+      }
+      return {
+        step,
+        owner: step.roleName ?? step.role ?? '—',
+        unmet: [...new Set(unmet)],
+        unlocked: [...new Set(unlocked)],
+        model: typeof step.model === 'string' && step.model !== '' ? step.model : '—',
+        failure: typeof step.failure === 'string' && step.failure !== '' ? step.failure : undefined,
+      };
+    }
+
+    /** 方向键导航：左右跨层，上下同层；焦点顺序与视觉的列→行一致。 */
+    function flowNavigate(layers, id, key) {
+      for (let col = 0; col < layers.length; col += 1) {
+        if (!Array.isArray(layers[col]) || layers[col].length === 0) continue;
+        const row = layers[col].findIndex((step) => step.id === id);
+        if (row < 0) continue;
+        if (key === 'ArrowUp' || key === 'ArrowDown') {
+          const next = Math.max(0, Math.min(layers[col].length - 1, row + (key === 'ArrowUp' ? -1 : 1)));
+          return layers[col][next]?.id ?? id;
+        }
+        if (key === 'ArrowLeft' || key === 'ArrowRight') {
+          const nextCol = Math.max(0, Math.min(layers.length - 1, col + (key === 'ArrowLeft' ? -1 : 1)));
+          const layer = layers[nextCol];
+          return layer[Math.min(row, layer.length - 1)]?.id ?? id;
+        }
+        return undefined;
+      }
+      return undefined;
+    }
+
+    /** 曲线层：单层 SVG，画在节点之下；标记 id 带 runId 前缀，避免多轮/多队冲突。 */
+    function FlowEdges({ edges, layout, chain, markerId }) {
+      const arrow = (fill) =>
+        h('path', { d: 'M0 0 L6 3 L0 6 Z', style: { fill } });
       return h(
         'svg',
         {
-          className: 'dsh-teams-flow-gap',
-          viewBox: '0 0 100 100',
-          preserveAspectRatio: 'none',
+          className: 'dsh-teams-flow-edges',
+          viewBox: `0 0 ${layout.width} ${layout.height}`,
+          width: layout.width,
+          height: layout.height,
           'aria-hidden': 'true',
+          focusable: 'false',
         },
-        ...paths,
+        h(
+          'defs',
+          null,
+          h(
+            'marker',
+            { id: markerId, viewBox: '0 0 6 6', refX: 5, refY: 3, markerWidth: 6, markerHeight: 6, orient: 'auto' },
+            arrow('var(--dsw-alias-label-secondary)'),
+          ),
+          h(
+            'marker',
+            { id: `${markerId}-on`, viewBox: '0 0 6 6', refX: 5, refY: 3, markerWidth: 6, markerHeight: 6, orient: 'auto' },
+            arrow('var(--dsw-alias-brand-primary)'),
+          ),
+        ),
+        ...edges.map((edge) => {
+          const active = chain !== undefined && chain.has(edge.from.id) && chain.has(edge.to.id);
+          const dimmed = chain !== undefined && !active;
+          return h('path', {
+            key: edge.key,
+            className: 'dsh-teams-flow-edge',
+            d: flowEdgePath(edge.from, edge.to),
+            'data-active': active ? 'true' : undefined,
+            'data-dim': dimmed ? 'true' : undefined,
+            markerEnd: `url(#${active ? `${markerId}-on` : markerId})`,
+          });
+        }),
       );
     }
 
@@ -1385,19 +1662,26 @@ window.__ModuleLoader__.load({
      * 一张身份牌（UI 设计师规范）：上半立绘舞台 + 下半信息区。
      *
      * 信息层级：角色名（2 行 clamp）→ 用量（label/value 右对齐 + tabular-nums）→ 状态胶囊。
-     * 状态不单靠颜色（有文字），并带 aria-label。
+     * 状态不单靠颜色（有文字），并带 aria-label。点击 = 钉住（会话入口在详情里）。
      */
-    function FlowCard({ step, t, openSession, canOpenSession }) {
+    function FlowCard({
+      step,
+      t,
+      detailId,
+      pinned,
+      highlighted,
+      dimmed,
+      tabIndex,
+      childCount,
+      onPin,
+      onHover,
+      onFocusNode,
+      onBlurNode,
+      onNavigate,
+    }) {
       const look = lookOf(step.role);
       const status = String(step.status ?? 'pending');
       const metrics = step.metrics ?? {};
-      const hasChild = typeof step.childId === 'string' && step.childId !== '';
-      // 能力缺失时不给"可点"的外观（禁用 + title 说明），点击路径也整段不挂
-      const clickable = hasChild && canOpenSession === true;
-      const unavailable = hasChild && canOpenSession !== true;
-      const open = () => {
-        if (clickable) openSession(step.childId);
-      };
       const tokens =
         metrics.inputTokens === undefined && metrics.outputTokens === undefined
           ? undefined
@@ -1407,37 +1691,52 @@ window.__ModuleLoader__.load({
         [t('flow.tokens'), tokens === undefined ? undefined : formatTokens(tokens)],
         [t('flow.cache'), metrics.cacheReadTokens === undefined ? undefined : formatTokens(metrics.cacheReadTokens)],
       ].filter((pair) => pair[1] !== undefined);
-      const roleName = step.roleName ?? step.role;
+      const roleName = step.roleName ?? step.role ?? '—';
       const statusLabel = t(`task.${status}`);
       const described = usage.map(([label, value]) => `${label} ${value}`).join('，');
+      const parents = Array.isArray(step.deps) ? [...new Set(step.deps)].length : 0;
+      const parentsText = parents === 0 ? t('task.noDeps') : `${t('task.deps')} ${parents}`;
       return h(
         'div',
         {
           className: 'dsh-teams-flow-card',
           'data-status': status,
-          'data-clickable': clickable ? 'true' : undefined,
-          'data-disabled': unavailable ? 'true' : undefined,
-          role: clickable ? 'button' : undefined,
-          tabIndex: clickable ? 0 : undefined,
-          'aria-label': `${roleName}，${statusLabel}${described === '' ? '' : `，${described}`}`,
-          'aria-disabled': unavailable ? 'true' : undefined,
-          title: clickable
-            ? t('flow.openSession')
-            : unavailable
-              ? t('session.unavailable')
-              : typeof step.failure === 'string' && step.failure !== ''
-                ? step.failure
-                : t('session.none'),
+          // 卡片永远可点：点击 = 钉住（会话入口在详情面板里）
+          'data-clickable': 'true',
+          'data-pinned': pinned ? 'true' : undefined,
+          'data-chain': highlighted ? 'true' : undefined,
+          'data-dim': dimmed ? 'true' : undefined,
+          'data-step-id': String(step.id),
+          role: 'button',
+          tabIndex,
+          'aria-pressed': pinned ? 'true' : 'false',
+          'aria-controls': pinned ? detailId : undefined,
+          'aria-label': `${roleName}，${statusLabel}，${parentsText}${
+            childCount === undefined ? '' : `，${t('flow.directDownstream')} ${childCount}`
+          }${described === '' ? '' : `，${described}`}`,
+          title: pinned ? t('flow.unpin') : t('flow.pin'),
           style: { '--role-accent': look.accent },
-          onClick: clickable ? open : undefined,
-          onKeyDown: clickable
-            ? (event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  open();
-                }
-              }
-            : undefined,
+          onClick: () => onPin(step.id),
+          onMouseEnter: () => onHover(step.id),
+          onMouseLeave: () => onHover(undefined),
+          onFocus: () => onFocusNode(step.id),
+          onBlur: () => onBlurNode(step.id),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onPin(step.id);
+              return;
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              onNavigate(step.id, 'Escape');
+              return;
+            }
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+              event.preventDefault();
+              onNavigate(step.id, event.key);
+            }
+          },
         },
         // 流光层：只有"进行中"才转
         h('span', { className: 'dsh-teams-flow-glow', 'aria-hidden': 'true' }),
@@ -1472,25 +1771,348 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** 一轮运行的流程图：列 = 依赖层级，左→右。 */
-    function FlowDiagram({ run, t, openSession, canOpenSession }) {
-      const steps = Array.isArray(run.steps) ? run.steps : [];
-      if (steps.length === 0) return h('div', { className: 'dsh-teams-muted' }, t('flow.empty'));
-      const layers = layersOf(steps);
-      const columns = [];
-      layers.forEach((layer, index) => {
-        if (index > 0) {
-          columns.push(h(FlowGap, { key: `gap-${index}`, parents: layers[index - 1], children: layer }));
-        }
-        columns.push(
-          h(
-            'div',
-            { className: 'dsh-teams-flow-col', key: `col-${index}` },
-            ...layer.map((step) => h(FlowCard, { key: step.id, step, t, openSession, canOpenSession })),
-          ),
+    /** 钉住后的详情面板：负责人 / 未满足前置 / 下游解锁 / 模型 + 会话入口。 */
+    function FlowDetail({ steps, id, detailId, t, onUnpin, openSession, canOpenSession }) {
+      const info = flowDetail(steps, id);
+      if (info === undefined) return null;
+      const step = info.step;
+      const status = String(step.status ?? 'pending');
+      const hasChild = typeof step.childId === 'string' && step.childId !== '';
+      const canOpen = hasChild && canOpenSession === true;
+      const openTitle = canOpen ? t('flow.openSession') : hasChild ? t('session.unavailable') : t('session.none');
+      const field = (label, value) =>
+        h(
+          'div',
+          { className: 'dsh-teams-flow-detail-item' },
+          h('span', { className: 'dsh-teams-flow-detail-label' }, label),
+          h('span', { className: 'dsh-teams-flow-detail-value', title: value }, value),
         );
-      });
-      return h('div', { className: 'dsh-teams-flow' }, ...columns);
+      return h(
+        'div',
+        {
+          className: 'dsh-teams-flow-detail',
+          id: detailId,
+          role: 'region',
+          'aria-label': t('flow.detail.title'),
+          'aria-live': 'polite',
+        },
+        h(
+          'div',
+          { className: 'dsh-teams-flow-detail-head' },
+          h('strong', { className: 'dsh-teams-flow-detail-title', title: info.owner }, info.owner),
+          h(
+            'span',
+            { className: 'dsh-teams-flow-detail-status', 'data-status': status },
+            h(
+              'span',
+              { className: 'dsh-teams-flow-state' },
+              h('i', { className: 'dsh-teams-dot', 'aria-hidden': 'true' }),
+              t(`task.${status}`),
+            ),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dsh-teams-btn dsh-teams-flow-detail-open',
+              disabled: !canOpen,
+              title: openTitle,
+              onClick: canOpen ? () => openSession(step.childId) : undefined,
+            },
+            t('flow.detail.open'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dsh-teams-flow-detail-close',
+              'aria-label': t('flow.unpin'),
+              title: t('flow.unpin'),
+              onClick: onUnpin,
+            },
+            '×',
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dsh-teams-flow-detail-grid' },
+          field(t('flow.detail.owner'), info.owner),
+          field(
+            t('flow.detail.unmet'),
+            info.unmet.length === 0 ? t('flow.detail.unmetNone') : info.unmet.join('、'),
+          ),
+          field(
+            t('flow.detail.unlocked'),
+            info.unlocked.length === 0 ? t('flow.detail.unlockedNone') : info.unlocked.join('、'),
+          ),
+          field(t('flow.detail.model'), info.model),
+        ),
+        info.failure === undefined
+          ? null
+          : h(
+              'div',
+              { className: 'dsh-teams-flow-detail-failure', title: info.failure },
+              `${t('flow.detail.failure')}：${info.failure}`,
+            ),
+      );
+    }
+
+    /** 窄面板列表视图：角色 / 状态 / 依赖 / 会话，一行一步。 */
+    function FlowList({ steps, t, pinnedId, onPin, onEscape, openSession, canOpenSession }) {
+      const byId = new Map(steps.map((step) => [step.id, step]));
+      const labelOf = (id) => {
+        const dep = byId.get(id);
+        return dep === undefined ? String(id) : dep.roleName ?? dep.role ?? String(dep.id);
+      };
+      return h(
+        'div',
+        {
+          className: 'dsh-teams-flow-list',
+          role: 'group',
+          'aria-label': t('flow.graphLabel').replace('{n}', String(steps.length)),
+        },
+        ...steps.map((step) => {
+          const status = String(step.status ?? 'pending');
+          const deps = Array.isArray(step.deps) ? [...new Set(step.deps)] : [];
+          const depsText =
+            deps.length === 0 ? t('task.noDeps') : `${t('task.deps')}：${deps.map(labelOf).join('、')}`;
+          const hasChild = typeof step.childId === 'string' && step.childId !== '';
+          const canOpen = hasChild && canOpenSession === true;
+          const pinned = pinnedId === step.id;
+          const openTitle = canOpen
+            ? t('flow.openSession')
+            : hasChild
+              ? t('session.unavailable')
+              : t('session.none');
+          return h(
+            'div',
+            { className: 'dsh-teams-flow-list-row', key: step.id },
+            h(
+              'div',
+              {
+                className: 'dsh-teams-flow-list-main',
+                'data-status': status,
+                'data-pinned': pinned ? 'true' : undefined,
+                role: 'button',
+                tabIndex: 0,
+                'aria-pressed': pinned ? 'true' : 'false',
+                'aria-label': `${step.roleName ?? step.role ?? '—'}，${t(`task.${status}`)}，${depsText}`,
+                onClick: () => onPin(step.id),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onPin(step.id);
+                    return;
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    onEscape();
+                  }
+                },
+              },
+              h('span', { className: 'dsh-teams-flow-list-role' }, step.roleName ?? step.role ?? '—'),
+              h(
+                'span',
+                { className: 'dsh-teams-flow-state' },
+                h('i', { className: 'dsh-teams-dot', 'aria-hidden': 'true' }),
+                t(`task.${status}`),
+              ),
+              h('span', { className: 'dsh-teams-flow-list-deps', title: depsText }, depsText),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-teams-btn',
+                disabled: !canOpen,
+                title: openTitle,
+                onClick: canOpen ? () => openSession(step.childId) : undefined,
+              },
+              t('flow.detail.open'),
+            ),
+          );
+        }),
+      );
+    }
+
+    /**
+     * 一轮运行的依赖图：列 = 依赖层级，左→右。
+     *
+     * 宽面板用绝对定位节点 + 单层 SVG 曲线（像素坐标，不测量节点）；
+     * 窄于 640px 曲线会压字，退回列表视图。`width` 只给测试注入，线上走 ResizeObserver。
+     */
+    function FlowDiagram({ run, t, openSession, canOpenSession, width }) {
+      const steps = Array.isArray(run.steps) ? run.steps : [];
+      const [measuredWidth, setMeasuredWidth] = React.useState(undefined);
+      const [hoverId, setHoverId] = React.useState(undefined);
+      const [focusId, setFocusId] = React.useState(undefined);
+      const [pinnedId, setPinnedId] = React.useState(undefined);
+      const rootRef = React.useRef(null);
+
+      // 宽度实测：首帧同步测一次，之后 100ms 节流；没有 ResizeObserver 就退回窗口 resize
+      React.useEffect(() => {
+        const node = rootRef.current;
+        if (node === null || node === undefined) return undefined;
+        const read = () => {
+          const next = node.clientWidth;
+          if (typeof next === 'number' && Number.isFinite(next) && next > 0) setMeasuredWidth(next);
+        };
+        read();
+        if (typeof ResizeObserver === 'function') {
+          let timer;
+          const observer = new ResizeObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(read, 100);
+          });
+          observer.observe(node);
+          return () => {
+            clearTimeout(timer);
+            observer.disconnect();
+          };
+        }
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+          window.addEventListener('resize', read);
+          return () => window.removeEventListener('resize', read);
+        }
+        return undefined;
+      }, []);
+
+      const layout = React.useMemo(() => flowNodes(steps), [steps]);
+      const nodeById = layout.nodeById;
+      // 渲染期先降级：刷新后钉住的节点没了就不显示详情（effect 再清 state）
+      const pinned = pinnedId !== undefined && nodeById.has(pinnedId) ? pinnedId : undefined;
+      const hovered = hoverId !== undefined && nodeById.has(hoverId) ? hoverId : undefined;
+      const focused = focusId !== undefined && nodeById.has(focusId) ? focusId : undefined;
+      // 键盘焦点优先于鼠标悬停：鼠标离开别的卡片不能清掉键盘正在浏览的链路
+      const activeId = pinned ?? focused ?? hovered;
+      const chain = activeId === undefined ? undefined : flowChain(steps, activeId);
+
+      React.useEffect(() => {
+        if (pinnedId !== undefined && !nodeById.has(pinnedId)) setPinnedId(undefined);
+      }, [pinnedId, steps]);
+
+      // Esc 取消钉住；停止确认框已 preventDefault 的事件让位（它自己处理 Esc）
+      React.useEffect(() => {
+        if (pinned === undefined) return undefined;
+        if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined;
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape' || event.defaultPrevented === true) return;
+          setPinnedId(undefined);
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+      }, [pinned]);
+
+      if (steps.length === 0) return h('div', { className: 'dsh-teams-muted' }, t('flow.empty'));
+
+      const mode = flowModeFor(width ?? measuredWidth);
+      const suffix = String(run.runId ?? 'run').replace(/[^a-zA-Z0-9_-]/g, '-');
+      const detailId = `dsh-teams-flow-detail-${suffix}`;
+      const markerId = `dsh-teams-flow-${suffix}-arrow`;
+      const edges = flowEdges(steps, nodeById);
+      const setPin = (id) => {
+        setPinnedId((current) => (current === id ? undefined : id));
+        setHoverId(undefined);
+      };
+      const clearPin = () => setPinnedId(undefined);
+      const focusStep = (id, key) => {
+        if (key === 'Escape') {
+          clearPin();
+          return;
+        }
+        const next = flowNavigate(layout.layers, id, key);
+        if (next === undefined) return;
+        const root = rootRef.current;
+        if (root === null || root === undefined || typeof root.querySelectorAll !== 'function') return;
+        for (const element of root.querySelectorAll('[data-step-id]')) {
+          if (element.getAttribute('data-step-id') !== String(next)) continue;
+          if (typeof element.focus === 'function') element.focus();
+          break;
+        }
+      };
+      const body =
+        mode === 'list'
+          ? h(FlowList, {
+              steps,
+              t,
+              pinnedId: pinned,
+              onPin: setPin,
+              onEscape: clearPin,
+              openSession,
+              canOpenSession,
+            })
+          : h(
+              'div',
+              {
+                className: 'dsh-teams-flow-canvas',
+                role: 'group',
+                'aria-label': t('flow.graphLabel').replace('{n}', String(steps.length)),
+                style: { width: layout.width, height: layout.height },
+              },
+              edges.length === 0 ? null : h(FlowEdges, { edges, layout, chain, markerId }),
+              ...steps.map((step) => {
+                const node = nodeById.get(step.id);
+                return h(
+                  'div',
+                  { className: 'dsh-teams-flow-node', key: step.id, style: { left: node.x, top: node.y } },
+                  h(FlowCard, {
+                    step,
+                    t,
+                    detailId,
+                    pinned: pinned === step.id,
+                    highlighted: chain !== undefined && chain.has(step.id),
+                    dimmed: chain !== undefined && !chain.has(step.id),
+                    // 每个节点都是独立 Tab 停靠点（验收要求 Tab 逐个进节点）
+                    tabIndex: 0,
+                    childCount: layout.childCount.get(step.id) ?? 0,
+                    onPin: setPin,
+                    onHover: (id) => {
+                      if (pinned === undefined) setHoverId(id);
+                    },
+                    onFocusNode: () => setFocusId(step.id),
+                    onBlurNode: (id) => setFocusId((current) => (current === id ? undefined : current)),
+                    onNavigate: focusStep,
+                  }),
+                );
+              }),
+            );
+      return h(
+        'div',
+        {
+          className: 'dsh-teams-flow',
+          'data-mode': mode,
+          ref: rootRef,
+          onKeyDown: (event) => {
+            if (event.key === 'Escape' && pinned !== undefined) {
+              event.stopPropagation();
+              clearPin();
+            }
+          },
+          // 点空白取消钉住：卡片/详情里的点击会冒泡到这里，靠 target 判定，避免刚钉住就被清掉
+          onClick: (event) => {
+            if (pinned === undefined) return;
+            const target = event?.target;
+            const blank =
+              target === event?.currentTarget ||
+              target?.className === 'dsh-teams-flow-viewport' ||
+              target?.className === 'dsh-teams-flow-canvas';
+            if (blank) clearPin();
+          },
+        },
+        // 详情放在滚动视口之外：横向滚到最右时「负责人」等核心信息仍在视野内
+        h('div', { className: 'dsh-teams-flow-viewport' }, body),
+        pinned === undefined
+          ? null
+          : h(FlowDetail, {
+              steps,
+              id: pinned,
+              detailId,
+              t,
+              onUnpin: clearPin,
+              openSession,
+              canOpenSession,
+            }),
+      );
     }
 
     /** 一轮运行的折叠项：头部一行（立绘牌 + 标题 + meta + 箭头 + 进度条），展开是流程图。 */
