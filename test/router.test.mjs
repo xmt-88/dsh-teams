@@ -283,3 +283,13 @@ test('空输入不抛异常', () => {
   assert.ok(typeof decision.path === 'string');
   assert.ok(decision.steps.length > 0);
 });
+
+test('歧义安全词必须配语境词才算高风险（子会话 / token 预算 不算）', async () => {
+  const { route } = await import('../lib/router.js');
+  // 误判回归：任务描述里出现"子会话""token 预算"这类日常词，不该被判成高风险
+  assert.equal(route({ taskText: '给团队面板加子会话跳转与停止确认框' }).score.risk, 0, '「子会话」不是安全信号');
+  // 真信号仍然要判高
+  for (const text of ['会话劫持导致越权', 'token 泄露后一直 401', 'SQL 注入点排查']) {
+    assert.equal(route({ taskText: text }).score.risk, 2, `「${text}」必须判高风险`);
+  }
+});
