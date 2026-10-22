@@ -2203,6 +2203,152 @@ test('依赖图：360px 窄面板保留身份卡竖向堆叠，不再退化为�
   assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '取消钉住');
 });
 
+test('窄宽流程图：纯函数把每条上游依赖排进左侧通道，多上游分道且状态色与宽视图同源', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  // 纯函数：只吃 steps（拓扑层序由 layersOf 算），不读 clientWidth / getBoundingClientRect
+  assert.match(source, /function flowStackLayout\(steps, railWidth = FLOW_STACK_RAIL\)/, '应有窄宽连线布局纯函数');
+  assert.ok(
+    !/function flowStackLayout[\s\S]{0,2600}(clientWidth|getBoundingClientRect)/.test(source),
+    '窄宽连线布局不得依赖真实 DOM 尺寸测量',
+  );
+  for (const status of ['done', 'failed', 'running', 'pending']) {
+    assert.match(
+      source,
+      new RegExp(`\\.dsh-teams-flow-stack-wire\\[data-status="${status}"\\]`),
+      `窄宽连线要有 ${status} 配色（与宽视图同一状态语义）`,
+    );
+  }
+  assert.match(
+    source,
+    /dsh-teams-flow-stack-wire-v\[data-status="pending"\][\s\S]{0,160}repeating-linear-gradient/,
+    '未到状态用灰色虚线',
+  );
+
+  const { flowBox } = await mountDag(FLOW_DAG, { width: 360 });
+  const stackNode = componentNamed(flowBox.tree, 'FlowStack');
+  const stack = stackNode.props.stack;
+  assert.ok(stack, 'FlowStack 应收到纯函数算出的连线布局');
+  assert.deepEqual(
+    stack.order.map((step) => step.id),
+    ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'],
+    '竖排顺序 = 拓扑层序（上游在前）',
+  );
+  assert.equal(stack.edges.length, 12, '12 条上游依赖各有一条连线');
+  const indexOf = (id) => stack.order.findIndex((step) => step.id === id);
+  const edge = (from, to) => stack.edges.find((item) => item.fromId === from && item.toId === to);
+  assert.equal(edge('a', 'b').status, 'done', '两侧都完成 = 绿');
+  assert.equal(edge('b', 'e').status, 'running', '指向进行中 = 黄');
+  assert.equal(edge('c', 'f').status, 'pending', '尚未到达 = 灰');
+
+  // 汇入 e 的两条上游：不同通道、不同接入高度，能看出多上游
+  const intoE = stack.incoming.get(indexOf('e'));
+  assert.equal(intoE.length, 2);
+  assert.notEqual(intoE[0].laneX, intoE[1].laneX, '多上游各占一条竖线通道');
+  assert.notEqual(intoE[0].entry, intoE[1].entry, '接入点沿卡片高度错开');
+  // e 正上方的缝里能同时看到这两条边；区间着色保证同缝竖线不重叠
+  const seamAboveE = stack.seams[indexOf('e') - 1];
+  assert.deepEqual(
+    seamAboveE.edges.map((item) => item.key).filter((key) => key.endsWith('->e')).sort(),
+    ['b->e', 'c->e'],
+    '跨缝竖线从上游一路补到 e',
+  );
+  for (const seam of stack.seams) {
+    const xs = seam.edges.map((item) => item.laneX);
+    assert.equal(new Set(xs).size, xs.length, `第 ${seam.index} 道缝的竖线不得共道`);
+  }
+
+  // 渲染层：每张有上游的卡一条 rail，行间缝各一条；e 的通道样式来自布局坐标
+  const tree = renderDirect(stackNode);
+  const rows = collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-row');
+  assert.equal(rows.length, 9);
+  assert.equal(
+    collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-rail').length,
+    8,
+    '除根节点 a 外每张卡都有左侧接入通道',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-seam').length,
+    8,
+    '9 行之间有 8 道缝',
+  );
+  const rowE = rows.find((node) => node.props['data-row'] === '4');
+  const railE = collect(rowE, (node) => node.props?.className === 'dsh-teams-flow-stack-rail')[0];
+  const wires = collect(railE, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-stack-wire'));
+  const vertical = wires.filter((node) => node.props.className.includes('-v'));
+  const horizontal = wires.filter((node) => node.props.className.includes('-h'));
+  // e 行：b->e / c->e 两条入线，另有 c->f、d->g 两条跨行长边（不能在某张卡处断线）
+  assert.equal(vertical.length, 4, '两条接入竖线 + 两条穿过本行的长边');
+  assert.equal(horizontal.length, 2, '两段水平接入');
+  assert.equal(new Set(vertical.map((node) => node.props.style.left)).size, 4, '竖线各占一道');
+  assert.equal(new Set(horizontal.map((node) => node.props.style.top)).size, 2, '接入高度不同');
+  assert.deepEqual(
+    horizontal.map((node) => node.props['data-status']),
+    ['running', 'running'],
+    'e 为进行中，两路入线都是黄',
+  );
+
+  // 失败上游 + 未到下游：同一张卡的入线各按自己那条边的状态着色
+  const failRun = {
+    runId: 'run-wire-fail',
+    phase: 'running',
+    subject: '失败传播',
+    steps: [
+      { id: 'x', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
+      { id: 'y', role: 'executor', roleName: '开发执行者', status: 'failed', deps: ['x'] },
+      { id: 'z', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['x', 'y'] },
+    ],
+  };
+  const { flowBox: failBox } = await mountDag(failRun, { width: 360 });
+  const failStack = componentNamed(failBox.tree, 'FlowStack').props.stack;
+  const intoZ = failStack.incoming.get(2);
+  assert.deepEqual(intoZ.map((item) => item.status).sort(), ['failed', 'pending'], '汇入同一张卡的两条边状态各自成立');
+  const failTree = renderDirect(componentNamed(failBox.tree, 'FlowStack'));
+  const rowZ = collect(failTree, (node) => node.props?.className === 'dsh-teams-flow-stack-row')[2];
+  const railZ = collect(rowZ, (node) => node.props?.className === 'dsh-teams-flow-stack-rail')[0];
+  assert.deepEqual(
+    [...new Set(collect(railZ, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-stack-wire'))
+      .map((node) => node.props['data-status']))].sort(),
+    ['failed', 'pending'],
+    '失败红 / 未到灰在汇入点同时可见',
+  );
+});
+
+test('折叠行样式：浅色卡底 + 圆角，标题 500、元信息次级色，行边界与线段进度贴底内缩', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(
+    source,
+    /\.dsh-teams-run-head\{[^}]*background:var\(--dsw-alias-bg-layer-1\)/,
+    '折叠行铺浅色卡底（layer-1）',
+  );
+  assert.match(source, /\.dsh-teams-run-head\{[^}]*border-radius:10px/, '折叠行有圆角');
+  assert.match(
+    source,
+    /\.dsh-teams-run\[open\] \.dsh-teams-run-head\{[^}]*border-radius:10px 10px 0 0/,
+    '展开时只圆上角',
+  );
+  assert.match(
+    source,
+    /\.dsh-teams-run\[open\] \.dsh-teams-run-head\{[^}]*box-shadow:inset 0 -1px 0 var\(--dsw-alias-border-l1\)/,
+    '展开时标题行与内容之间有清晰边界',
+  );
+  assert.match(source, /\.dsh-teams-run-subject\{[^}]*font-weight:500/, '标题字重降到 500');
+  assert.match(
+    source,
+    /\.dsh-teams-run-meta\{[^}]*color:var\(--dsw-alias-label-secondary\)/,
+    '元信息降为次要色',
+  );
+  assert.match(
+    source,
+    /\.dsh-teams-run\{[^}]*background:transparent/,
+    '外层不再垫同色底，折叠行的 layer-1 卡底才看得出来',
+  );
+  assert.match(
+    source,
+    /\.dsh-teams-run-bar\{[^}]*left:12px;right:12px;bottom:6px/,
+    '线段式进度条保持：贴行内底部、两侧内缩',
+  );
+});
+
 test('回归：360/320px 窄面板渲染身份卡，而不是纯列表行', async () => {
   for (const width of [360, 320]) {
     const { flowBox } = await mountDag(FLOW_DAG, { width });

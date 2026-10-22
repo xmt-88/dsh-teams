@@ -638,12 +638,18 @@ window.__ModuleLoader__.load({
 /* ============ 运行列表：按每次任务折叠 ============ */
 .dsh-teams-runs{display:flex;flex-direction:column;gap:8px;}
 .dsh-teams-run{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
-  background:var(--dsw-alias-bg-layer-1);overflow:hidden;}
+  /* 外层不再垫色：浅色卡底落在折叠行上，行与行之间才看得出边界 */
+  background:transparent;overflow:hidden;}
 /* 折叠行：三列层级 —— 立绘 ｜（标题 + 元信息小字）｜ 状态与进度（靠右）。
-   层级靠字号/字重/灰度：标题 13/600，元信息 11px 次级灰，数字等宽。 */
+   层级靠字号/字重/灰度：标题 13/500，元信息 11px 次级灰，数字等宽。
+   折叠行自带 layer-1 卡底 + 圆角，与外层的 1px 描边共同勾出每一行的边界。 */
 .dsh-teams-run-head{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) auto 12px;
   column-gap:10px;row-gap:2px;align-items:center;min-height:36px;padding:8px 10px 14px;
-  cursor:pointer;list-style:none;font-size:13px;}
+  cursor:pointer;list-style:none;font-size:13px;
+  background:var(--dsw-alias-bg-layer-1);border-radius:10px;}
+/* 展开时只圆上角，并用底部细线把标题行与内容区分开 */
+.dsh-teams-run[open] .dsh-teams-run-head{border-radius:10px 10px 0 0;
+  box-shadow:inset 0 -1px 0 var(--dsw-alias-border-l1);}
 .dsh-teams-run-head::-webkit-details-marker{display:none;}
 .dsh-teams-run-head:hover{background:var(--dsw-alias-bg-layer-2);}
 .dsh-teams-run-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}
@@ -652,7 +658,7 @@ window.__ModuleLoader__.load({
   overflow:visible;display:flex;align-items:flex-end;justify-content:center;
   background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}
 .dsh-teams-run-avatar .dsh-teams-whale{margin-bottom:-2px;}
-.dsh-teams-run-subject{grid-column:2;grid-row:1;font-size:13px;font-weight:600;min-width:0;
+.dsh-teams-run-subject{grid-column:2;grid-row:1;font-size:13px;font-weight:500;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);}
 .dsh-teams-run-meta{grid-column:2;grid-row:2;display:flex;align-items:center;gap:6px;min-width:0;
   font-size:11px;line-height:14px;color:var(--dsw-alias-label-secondary);}
@@ -715,7 +721,7 @@ window.__ModuleLoader__.load({
 @keyframes dsh-teams-shimmer{from{background-position:200% 0;}to{background-position:-100% 0;}}
 
 /* 流程图：绝对定位节点画布 + 单层像素坐标 SVG 曲线（viewBox 与像素 1:1，箭头不变形） */
-/* 流程图区不垫底色：运行卡本身已是 bg-layer-1，重复垫一层等于没垫（设计师实测指出） */
+/* 流程图区不垫底色：只有折叠行带 layer-1 卡底，流程图直接坐在面板底色上（设计师实测指出） */
 .dsh-teams-flow{position:relative;padding:8px 6px 16px;}
 /* 只有画布横向滚动：详情在滚动容器之外，向右滚也不会把「负责人」滚出视野 */
 .dsh-teams-flow-viewport{overflow-x:auto;overflow-y:hidden;}
@@ -899,9 +905,10 @@ window.__ModuleLoader__.load({
   max-height:120px;overflow-y:auto;}
 .dsh-teams-flow[data-mode="stack"] .dsh-teams-flow-viewport{overflow:visible;}
 .dsh-teams-flow-stack{display:flex;flex-direction:column;gap:8px;width:100%;min-width:0;}
-/* 卡内信息与宽视图同源：立绘 + 角色名 + 状态胶囊 + 步数/token/缓存 + 依赖行 */
+/* 卡内信息与宽视图同源：立绘 + 角色名 + 状态胶囊 + 步数/token/缓存 + 依赖行。
+   左侧 28px 是连线通道（padding 让出，不压内容）；连线由 .dsh-teams-flow-stack-wire 画在通道里。 */
 .dsh-teams-flow-card-stack{width:100%;height:auto;min-height:92px;flex-direction:row;align-items:stretch;
-  border-radius:16px;text-align:left;}
+  border-radius:16px;text-align:left;padding-left:28px;}
 .dsh-teams-flow-card-stack .dsh-teams-flow-stage{width:64px;height:auto;align-self:stretch;
   align-items:center;border-bottom:0;border-right:1px solid var(--dsw-alias-border-l1);}
 .dsh-teams-flow-card-stack .dsh-teams-flow-inner{margin-bottom:0;}
@@ -917,11 +924,41 @@ window.__ModuleLoader__.load({
 .dsh-teams-flow-card-stack .dsh-teams-flow-deps{grid-column:1/-1;grid-row:3;min-width:0;font-size:10.5px;
   line-height:14px;color:var(--dsw-alias-label-secondary);text-align:left;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-badge{right:auto;left:4px;top:4px;}
+.dsh-teams-flow-card-stack .dsh-teams-flow-badge{right:auto;left:32px;top:4px;}
 .dsh-teams-flow-card-stack[data-clickable="true"]:hover{transform:translateY(-2px);}
 .dsh-teams-flow-card-stack[data-clickable="true"]:active{transform:translateY(0);}
+/* 窄宽竖向流程图：卡片左侧 28px 通道里走折线。
+   行内 rail 负责"竖直下落 + 水平接入"；行与行之间的缝补竖线，上游隔几行也能连下来。
+   颜色/虚线规则与宽视图 .dsh-teams-flow-edge 完全一致（同一套 flowEdgeStatus 状态值）。 */
+.dsh-teams-flow-stack-row{position:relative;display:flex;flex-direction:column;min-width:0;}
+.dsh-teams-flow-stack-seam{position:absolute;left:0;top:-8px;width:28px;height:8px;
+  pointer-events:none;z-index:2;}
+.dsh-teams-flow-stack-rail{position:absolute;left:0;top:0;bottom:0;width:28px;
+  pointer-events:none;z-index:2;transition:transform .18s ease;}
+.dsh-teams-flow-stack-wire{position:absolute;display:block;border-radius:1px;
+  background:var(--dsw-alias-label-secondary);opacity:.45;}
+.dsh-teams-flow-stack-wire-v{top:0;width:1.5px;height:100%;}
+.dsh-teams-flow-stack-wire-h{height:1.5px;transform:translateY(-.75px);}
+.dsh-teams-flow-stack-wire[data-status="done"]{background:var(--dsw-alias-state-success-primary);
+  opacity:.75;}
+.dsh-teams-flow-stack-wire[data-status="failed"]{background:var(--dsw-alias-state-error-primary);
+  opacity:.85;}
+.dsh-teams-flow-stack-wire[data-status="running"]{background:var(--dsw-alias-state-warn-primary);
+  opacity:.9;}
+.dsh-teams-flow-stack-wire[data-status="pending"]{background:transparent;opacity:.5;}
+.dsh-teams-flow-stack-wire-v[data-status="pending"]{
+  background:repeating-linear-gradient(to bottom,
+    var(--dsw-alias-label-secondary) 0 3px,transparent 3px 6px);}
+.dsh-teams-flow-stack-wire-h[data-status="pending"]{
+  background:repeating-linear-gradient(to right,
+    var(--dsw-alias-label-secondary) 0 3px,transparent 3px 6px);}
+.dsh-teams-flow-stack-wire[data-active="true"]{opacity:1;}
+.dsh-teams-flow-stack-wire[data-dim="true"]{opacity:.12;}
+/* 卡片悬停上浮 2px 时连线同步上移，避免通道与卡片脱开 */
+.dsh-teams-flow-stack-row:hover .dsh-teams-flow-stack-rail{transform:translateY(-2px);}
 @media (prefers-reduced-motion:reduce){
   .dsh-teams-flow-card-stack[data-clickable="true"]:hover{transform:translateY(-2px);}
+  .dsh-teams-flow-stack-rail{transition:none;}
 }
 /* 详情里的状态色（卡片那套选择器只作用于 .dsh-teams-flow-card） */
 .dsh-teams-flow-detail-status[data-status="done"]{--state-color:var(--dsw-alias-state-success-primary);}
@@ -1449,6 +1486,7 @@ window.__ModuleLoader__.load({
       'M1 90 L1 16 A15 15 0 0 1 16 1 L100 1 A15 15 0 0 1 115 16 L115 164 A15 15 0 0 1 100 179 L16 179 A15 15 0 0 1 1 164 Z';
     const FLOW_GAP_Y = 10; // 同层行距
     const FLOW_STACK_WIDTH = 640; // 窄于此宽度改用竖排卡片（依赖曲线会压字，卡片内容不降级）
+    const FLOW_STACK_RAIL = 28; // 竖排卡片左侧连线通道宽度（与 .dsh-teams-flow-card-stack 的 padding-left 一致）
 
     /** 依赖 → 层级（列号）；同层按前驱平均行号 → deps → id 稳定排序。环按 0 层。 */
     function layersOf(steps) {
@@ -1602,6 +1640,74 @@ window.__ModuleLoader__.load({
     /** 窄面板保留卡片、竖向堆叠（依赖改行内标注）；宽度未知时先按曲线视图，量到窄再切换。 */
     function flowModeFor(width) {
       return typeof width === 'number' && Number.isFinite(width) && width < FLOW_STACK_WIDTH ? 'stack' : 'graph';
+    }
+
+    /**
+     * 窄宽竖向流程图布局（纯函数，不读 DOM）：按拓扑序给每条「上游 → 下游」边分配左侧通道。
+     * - 通道按竖线跨越的行区间做区间着色：跨同一道缝的边不共道，颜色不会互相覆盖；
+     * - 同一张卡的多条上游边各占一条通道，接入点沿卡片高度错开，能看出是几路汇入；
+     * - 状态复用 flowEdgeStatus，与宽视图完全同一条配色规则；
+     * - seams[i] = 第 i 行与 i+1 行之间穿过的边：缝里补竖线，上游隔几行也连得下来。
+     */
+    function flowStackLayout(steps, railWidth = FLOW_STACK_RAIL) {
+      const order = layersOf(steps).flat();
+      const indexById = new Map(order.map((step, index) => [step.id, index]));
+      const edges = [];
+      order.forEach((step, toIndex) => {
+        for (const depId of new Set(Array.isArray(step.deps) ? step.deps : [])) {
+          const fromIndex = indexById.get(depId);
+          // 与宽视图同一条合法性规则：未知依赖、自依赖、同层/反向边都不画
+          if (fromIndex === undefined || depId === step.id || fromIndex >= toIndex) continue;
+          const from = order[fromIndex];
+          edges.push({
+            key: `${String(depId)}->${String(step.id)}`,
+            fromId: depId,
+            toId: step.id,
+            fromIndex,
+            toIndex,
+            status: flowEdgeStatus({ from: { step: from }, to: { step } }),
+          });
+        }
+      });
+      // 区间着色：按上游行号升序，找一条「上一占用行号 <= 本条上游行号」的空通道
+      const laneEnd = [];
+      [...edges]
+        .sort((a, b) => a.fromIndex - b.fromIndex || a.toIndex - b.toIndex || a.key.localeCompare(b.key))
+        .forEach((edge) => {
+          let lane = laneEnd.findIndex((end) => end <= edge.fromIndex);
+          if (lane < 0) {
+            lane = laneEnd.length;
+            laneEnd.push(edge.toIndex);
+          } else {
+            laneEnd[lane] = edge.toIndex;
+          }
+          edge.lane = lane;
+        });
+      const laneCount = laneEnd.length;
+      const spread = railWidth - 12;
+      for (const edge of edges) {
+        edge.laneX = laneCount <= 1 ? railWidth / 2 : 6 + (spread * edge.lane) / (laneCount - 1);
+      }
+      // 每张卡的入线：通道升序，接入点 28%~72% 均布（多上游各有各的接入高度）
+      const incoming = new Map();
+      for (const edge of edges) {
+        if (!incoming.has(edge.toIndex)) incoming.set(edge.toIndex, []);
+        incoming.get(edge.toIndex).push(edge);
+      }
+      for (const list of incoming.values()) {
+        list.sort((a, b) => a.lane - b.lane);
+        list.forEach((edge, index) => {
+          edge.entry = list.length === 1 ? 0.5 : 0.28 + (0.44 * index) / (list.length - 1);
+        });
+      }
+      const seams = [];
+      for (let index = 0; index < order.length - 1; index += 1) {
+        seams.push({
+          index,
+          edges: edges.filter((edge) => edge.fromIndex <= index && edge.toIndex > index),
+        });
+      }
+      return { order, edges, incoming, seams, laneCount, railWidth };
     }
 
     /** 完整上下游链：上溯到根、下溯到叶（含自身）；环安全。 */
@@ -2005,9 +2111,12 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** 窄面板：同一张身份卡竖向堆叠，依赖改行内标注（内容与曲线视图完全同源）。 */
+    /**
+     * 窄面板：竖向流程图 —— 身份卡按拓扑序堆叠，每条上游依赖都在左侧 28px 通道里走折线接入。
+     * 内容与曲线视图完全同源；连线坐标来自纯函数 flowStackLayout（不测量 DOM）。
+     */
     function FlowStack({
-      steps,
+      stack,
       t,
       pinnedId,
       detailId,
@@ -2019,10 +2128,35 @@ window.__ModuleLoader__.load({
       onBlurNode,
       onNavigate,
     }) {
+      const steps = stack.order;
       const byId = new Map(steps.map((step) => [step.id, step]));
       const labelOf = (id) => {
         const dep = byId.get(id);
         return dep === undefined ? String(id) : dep.roleName ?? dep.role ?? String(dep.id);
+      };
+      // 一条连线（竖线或水平接入段）：与宽视图共用 data-status 配色语义；悬停链路同样高亮/淡化。
+      // fullHeight = 竖线铺满整行（缝里的补线 / 跨过本行继续向下的长边），否则只落到接入点。
+      const wireOf = (edge, kind, fullHeight) => {
+        const active = chain !== undefined && chain.has(edge.fromId) && chain.has(edge.toId);
+        const style =
+          kind === 'h'
+            ? {
+                left: `${edge.laneX.toFixed(1)}px`,
+                top: `${(edge.entry * 100).toFixed(1)}%`,
+                width: `${(stack.railWidth - edge.laneX).toFixed(1)}px`,
+              }
+            : fullHeight === true
+              ? { left: `${edge.laneX.toFixed(1)}px` }
+              : { left: `${edge.laneX.toFixed(1)}px`, height: `${(edge.entry * 100).toFixed(1)}%` };
+        return h('span', {
+          key: `${edge.key}-${kind}${fullHeight === true && kind === 'v' ? '-full' : ''}`,
+          className: `dsh-teams-flow-stack-wire dsh-teams-flow-stack-wire-${kind}`,
+          'data-status': edge.status,
+          'data-active': active ? 'true' : undefined,
+          'data-dim': chain !== undefined && !active ? 'true' : undefined,
+          'aria-hidden': 'true',
+          style,
+        });
       };
       return h(
         'div',
@@ -2031,26 +2165,51 @@ window.__ModuleLoader__.load({
           role: 'group',
           'aria-label': t('flow.stackLabel').replace('{n}', String(steps.length)),
         },
-        ...steps.map((step) => {
+        ...steps.map((step, index) => {
           const deps = Array.isArray(step.deps) ? [...new Set(step.deps)] : [];
           const depsText =
             deps.length === 0 ? t('task.noDeps') : `${t('task.deps')}：${deps.map(labelOf).join('、')}`;
-          return h(FlowCard, {
-            key: step.id,
-            step,
-            t,
-            detailId,
-            pinned: pinnedId === step.id,
-            highlighted: chain !== undefined && chain.has(step.id),
-            tabIndex: 0,
-            childCount: childCount.get(step.id) ?? 0,
-            depsText,
-            onPin,
-            onHover,
-            onFocusNode,
-            onBlurNode,
-            onNavigate,
-          });
+          const seam = index === 0 ? undefined : stack.seams[index - 1];
+          const incoming = stack.incoming.get(index) ?? [];
+          // 跨过本行继续向下的长边：在卡左侧通道里补满高竖线，线不会在中间某张卡处断掉
+          const passing = stack.edges.filter((edge) => edge.fromIndex < index && edge.toIndex > index);
+          return h(
+            'div',
+            { className: 'dsh-teams-flow-stack-row', key: step.id, 'data-row': String(index) },
+            // 行间缝：把跨过这一行的上游竖线补齐，隔行的依赖也能一路连下来
+            seam === undefined || seam.edges.length === 0
+              ? null
+              : h(
+                  'div',
+                  { className: 'dsh-teams-flow-stack-seam', 'aria-hidden': 'true' },
+                  ...seam.edges.map((edge) => wireOf(edge, 'v', true)),
+                ),
+            h(FlowCard, {
+              step,
+              t,
+              detailId,
+              pinned: pinnedId === step.id,
+              highlighted: chain !== undefined && chain.has(step.id),
+              tabIndex: 0,
+              childCount: childCount.get(step.id) ?? 0,
+              depsText,
+              onPin,
+              onHover,
+              onFocusNode,
+              onBlurNode,
+              onNavigate,
+            }),
+            // 卡内左侧通道：跨行长边先铺满整行，再画本行上游的竖线 + 水平接入
+            incoming.length === 0 && passing.length === 0
+              ? null
+              : h(
+                  'div',
+                  { className: 'dsh-teams-flow-stack-rail', 'aria-hidden': 'true' },
+                  ...passing.map((edge) => wireOf(edge, 'v', true)),
+                  ...incoming.map((edge) => wireOf(edge, 'v', false)),
+                  ...incoming.map((edge) => wireOf(edge, 'h', false)),
+                ),
+          );
         }),
       );
     }
@@ -2098,8 +2257,9 @@ window.__ModuleLoader__.load({
       }, []);
 
       const layout = React.useMemo(() => flowNodes(steps), [steps]);
-      // 竖排顺序 = 拓扑层序（上游在前），与曲线视图的列序一致
-      const stackOrder = React.useMemo(() => layout.layers.flat(), [layout]);
+      // 竖排顺序 = 拓扑层序（上游在前），连线布局同时算出，窄宽渲染直接用这份纯函数结果
+      const stack = React.useMemo(() => flowStackLayout(steps), [steps]);
+      const stackOrder = stack.order;
       const nodeById = layout.nodeById;
       // 渲染期先降级：刷新后钉住的节点没了就不显示详情（effect 再清 state）
       const pinned = pinnedId !== undefined && nodeById.has(pinnedId) ? pinnedId : undefined;
@@ -2166,7 +2326,7 @@ window.__ModuleLoader__.load({
       const body =
         mode === 'stack'
           ? h(FlowStack, {
-              steps: stackOrder,
+              stack,
               t,
               pinnedId: pinned,
               detailId,
@@ -2235,7 +2395,8 @@ window.__ModuleLoader__.load({
               target === event?.currentTarget ||
               target?.className === 'dsh-teams-flow-viewport' ||
               target?.className === 'dsh-teams-flow-canvas' ||
-              target?.className === 'dsh-teams-flow-stack';
+              target?.className === 'dsh-teams-flow-stack' ||
+              target?.className === 'dsh-teams-flow-stack-row';
             if (blank) clearPin();
           },
         },
