@@ -74,7 +74,6 @@ window.__ModuleLoader__.load({
       'flow.untitled': '（未命名任务）',
       'flow.more': '显示更早的 {n} 轮',
       'flow.graphLabel': '依赖图：{n} 个任务',
-      'flow.stackLabel': '流程卡片：{n} 个任务',
       'flow.pin': '钉住并查看详情',
       'flow.unpin': '取消钉住',
       'flow.detail.title': '任务详情',
@@ -284,7 +283,6 @@ window.__ModuleLoader__.load({
       'flow.untitled': '(untitled task)',
       'flow.more': 'Show {n} earlier runs',
       'flow.graphLabel': 'Dependency graph: {n} tasks',
-      'flow.stackLabel': 'Flow cards: {n} tasks',
       'flow.pin': 'Pin and show details',
       'flow.unpin': 'Unpin',
       'flow.detail.title': 'Task details',
@@ -902,54 +900,6 @@ window.__ModuleLoader__.load({
   line-height:1.35;white-space:pre-wrap;word-break:break-word;
   border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));
   color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 65%,var(--dsw-alias-label-primary));}
-/* 窄面板（<640px）：同一张身份卡竖向堆叠，依赖改行内标注；详情改单列并可滚动 */
-.dsh-teams-flow[data-mode="stack"] .dsh-teams-flow-detail-grid{grid-template-columns:1fr;
-  max-height:120px;overflow-y:auto;}
-.dsh-teams-flow[data-mode="stack"] .dsh-teams-flow-viewport{overflow:visible;}
-.dsh-teams-flow-stack{display:flex;flex-direction:column;gap:8px;width:100%;min-width:0;}
-/* 窄宽复用宽视图的竖卡身份牌：立绘在上、信息在下，只改宽度与定位，内容不另写一套。
-   宽度上限 220px，左边缘靠 margin-left 落在 28px 连线通道右侧（水平接入线终点 x=28），
-   两者不重叠；max-width 兜住极窄面板，避免 28px 通道把卡片挤出容器。 */
-.dsh-teams-flow-card-stack{width:min(100%,220px);max-width:calc(100% - 28px);
-  height:auto;min-height:180px;margin-left:28px;text-align:center;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-deps{min-width:0;font-size:10.5px;line-height:14px;
-  color:var(--dsw-alias-label-secondary);text-align:center;overflow:hidden;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word;}
-.dsh-teams-flow-card-stack[data-clickable="true"]:hover{transform:translateY(-2px);}
-.dsh-teams-flow-card-stack[data-clickable="true"]:active{transform:translateY(0);}
-/* 窄宽竖向流程图：卡片左侧 28px 通道里走折线。
-   行内 rail 负责"竖直下落 + 水平接入"；行与行之间的缝补竖线，上游隔几行也能连下来。
-   颜色/虚线规则与宽视图 .dsh-teams-flow-edge 完全一致（同一套 flowEdgeStatus 状态值）。 */
-.dsh-teams-flow-stack-row{position:relative;display:flex;flex-direction:column;min-width:0;}
-.dsh-teams-flow-stack-seam{position:absolute;left:0;top:-8px;width:28px;height:8px;
-  pointer-events:none;z-index:2;}
-.dsh-teams-flow-stack-rail{position:absolute;left:0;top:0;bottom:0;width:28px;
-  pointer-events:none;z-index:2;transition:transform .18s ease;}
-.dsh-teams-flow-stack-wire{position:absolute;display:block;border-radius:1px;
-  background:var(--dsw-alias-label-secondary);opacity:.45;}
-.dsh-teams-flow-stack-wire-v{top:0;width:1.5px;height:100%;}
-.dsh-teams-flow-stack-wire-h{height:1.5px;transform:translateY(-.75px);}
-.dsh-teams-flow-stack-wire[data-status="done"]{background:var(--dsw-alias-state-success-primary);
-  opacity:.75;}
-.dsh-teams-flow-stack-wire[data-status="failed"]{background:var(--dsw-alias-state-error-primary);
-  opacity:.85;}
-.dsh-teams-flow-stack-wire[data-status="running"]{background:var(--dsw-alias-state-warn-primary);
-  opacity:.9;}
-.dsh-teams-flow-stack-wire[data-status="pending"]{background:transparent;opacity:.5;}
-.dsh-teams-flow-stack-wire-v[data-status="pending"]{
-  background:repeating-linear-gradient(to bottom,
-    var(--dsw-alias-label-secondary) 0 3px,transparent 3px 6px);}
-.dsh-teams-flow-stack-wire-h[data-status="pending"]{
-  background:repeating-linear-gradient(to right,
-    var(--dsw-alias-label-secondary) 0 3px,transparent 3px 6px);}
-.dsh-teams-flow-stack-wire[data-active="true"]{opacity:1;}
-.dsh-teams-flow-stack-wire[data-dim="true"]{opacity:.12;}
-/* 卡片悬停上浮 2px 时连线同步上移，避免通道与卡片脱开 */
-.dsh-teams-flow-stack-row:hover .dsh-teams-flow-stack-rail{transform:translateY(-2px);}
-@media (prefers-reduced-motion:reduce){
-  .dsh-teams-flow-card-stack[data-clickable="true"]:hover{transform:translateY(-2px);}
-  .dsh-teams-flow-stack-rail{transition:none;}
-}
 /* 详情里的状态色（卡片那套选择器只作用于 .dsh-teams-flow-card） */
 .dsh-teams-flow-detail-status[data-status="done"]{--state-color:var(--dsw-alias-state-success-primary);}
 .dsh-teams-flow-detail-status[data-status="failed"]{--state-color:var(--dsw-alias-state-error-primary);}
@@ -1475,8 +1425,6 @@ window.__ModuleLoader__.load({
     const FLOW_RING_PATH =
       'M1 90 L1 16 A15 15 0 0 1 16 1 L100 1 A15 15 0 0 1 115 16 L115 164 A15 15 0 0 1 100 179 L16 179 A15 15 0 0 1 1 164 Z';
     const FLOW_GAP_Y = 10; // 同层行距
-    const FLOW_STACK_WIDTH = 640; // 窄于此宽度改用竖排卡片（依赖曲线会压字，卡片内容不降级）
-    const FLOW_STACK_RAIL = 28; // 竖排卡片左侧连线通道宽度（与 .dsh-teams-flow-card-stack 的 margin-left 一致）
 
     /** 依赖 → 层级（列号）；同层按前驱平均行号 → deps → id 稳定排序。环按 0 层。 */
     function layersOf(steps) {
@@ -1627,80 +1575,8 @@ window.__ModuleLoader__.load({
       return channels;
     }
 
-    /** 窄面板保留卡片、竖向堆叠（依赖改行内标注）；宽度未知时先按曲线视图，量到窄再切换。 */
-    function flowModeFor(width) {
-      return typeof width === 'number' && Number.isFinite(width) && width < FLOW_STACK_WIDTH ? 'stack' : 'graph';
-    }
-
-    /**
-     * 窄宽竖向流程图布局（纯函数，不读 DOM）：按拓扑序给每条「上游 → 下游」边分配左侧通道。
-     * - 通道按竖线跨越的行区间做区间着色：跨同一道缝的边不共道，颜色不会互相覆盖；
-     * - 同一张卡的多条上游边各占一条通道，接入点沿卡片高度错开，能看出是几路汇入；
-     * - 状态复用 flowEdgeStatus，与宽视图完全同一条配色规则；
-     * - seams[i] = 第 i 行与 i+1 行之间穿过的边：缝里补竖线，上游隔几行也连得下来。
-     */
-    function flowStackLayout(steps, railWidth = FLOW_STACK_RAIL) {
-      const order = layersOf(steps).flat();
-      const indexById = new Map(order.map((step, index) => [step.id, index]));
-      const edges = [];
-      order.forEach((step, toIndex) => {
-        for (const depId of new Set(Array.isArray(step.deps) ? step.deps : [])) {
-          const fromIndex = indexById.get(depId);
-          // 与宽视图同一条合法性规则：未知依赖、自依赖、同层/反向边都不画
-          if (fromIndex === undefined || depId === step.id || fromIndex >= toIndex) continue;
-          const from = order[fromIndex];
-          edges.push({
-            key: `${String(depId)}->${String(step.id)}`,
-            fromId: depId,
-            toId: step.id,
-            fromIndex,
-            toIndex,
-            status: flowEdgeStatus({ from: { step: from }, to: { step } }),
-          });
-        }
-      });
-      // 区间着色：按上游行号升序，找一条「上一占用行号 <= 本条上游行号」的空通道
-      const laneEnd = [];
-      [...edges]
-        .sort((a, b) => a.fromIndex - b.fromIndex || a.toIndex - b.toIndex || a.key.localeCompare(b.key))
-        .forEach((edge) => {
-          let lane = laneEnd.findIndex((end) => end <= edge.fromIndex);
-          if (lane < 0) {
-            lane = laneEnd.length;
-            laneEnd.push(edge.toIndex);
-          } else {
-            laneEnd[lane] = edge.toIndex;
-          }
-          edge.lane = lane;
-        });
-      const laneCount = laneEnd.length;
-      const spread = railWidth - 12;
-      for (const edge of edges) {
-        edge.laneX = laneCount <= 1 ? railWidth / 2 : 6 + (spread * edge.lane) / (laneCount - 1);
-      }
-      // 每张卡的入线：通道升序，接入点 28%~72% 均布（多上游各有各的接入高度）
-      const incoming = new Map();
-      for (const edge of edges) {
-        if (!incoming.has(edge.toIndex)) incoming.set(edge.toIndex, []);
-        incoming.get(edge.toIndex).push(edge);
-      }
-      for (const list of incoming.values()) {
-        list.sort((a, b) => a.lane - b.lane);
-        list.forEach((edge, index) => {
-          edge.entry = list.length === 1 ? 0.5 : 0.28 + (0.44 * index) / (list.length - 1);
-        });
-      }
-      const seams = [];
-      for (let index = 0; index < order.length - 1; index += 1) {
-        seams.push({
-          index,
-          edges: edges.filter((edge) => edge.fromIndex <= index && edge.toIndex > index),
-        });
-      }
-      return { order, edges, incoming, seams, laneCount, railWidth };
-    }
-
-    /** 完整上下游链：上溯到根、下溯到叶（含自身）；环安全。 */
+    
+        /** 完整上下游链：上溯到根、下溯到叶（含自身）；环安全。 */
     function flowChain(steps, id) {
       const chain = new Set();
       if (!steps.some((step) => step.id === id)) return chain;
@@ -1922,10 +1798,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         {
-          className:
-            depsText === undefined
-              ? 'dsh-teams-flow-card'
-              : 'dsh-teams-flow-card dsh-teams-flow-card-stack',
+          className: 'dsh-teams-flow-card',
           'data-status': status,
           // 卡片永远可点：点击 = 钉住（会话入口在详情面板里）
           'data-clickable': 'true',
@@ -2101,155 +1974,20 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /**
-     * 窄面板：竖向流程图 —— 身份卡按拓扑序堆叠，每条上游依赖都在左侧 28px 通道里走折线接入。
-     * 内容与曲线视图完全同源；连线坐标来自纯函数 flowStackLayout（不测量 DOM）。
-     */
-    function FlowStack({
-      stack,
-      t,
-      pinnedId,
-      detailId,
-      chain,
-      childCount,
-      onPin,
-      onHover,
-      onFocusNode,
-      onBlurNode,
-      onNavigate,
-    }) {
-      const steps = stack.order;
-      const byId = new Map(steps.map((step) => [step.id, step]));
-      const labelOf = (id) => {
-        const dep = byId.get(id);
-        return dep === undefined ? String(id) : dep.roleName ?? dep.role ?? String(dep.id);
-      };
-      // 一条连线（竖线或水平接入段）：与宽视图共用 data-status 配色语义；悬停链路同样高亮/淡化。
-      // fullHeight = 竖线铺满整行（缝里的补线 / 跨过本行继续向下的长边），否则只落到接入点。
-      const wireOf = (edge, kind, fullHeight) => {
-        const active = chain !== undefined && chain.has(edge.fromId) && chain.has(edge.toId);
-        const style =
-          kind === 'h'
-            ? {
-                left: `${edge.laneX.toFixed(1)}px`,
-                top: `${(edge.entry * 100).toFixed(1)}%`,
-                width: `${(stack.railWidth - edge.laneX).toFixed(1)}px`,
-              }
-            : fullHeight === true
-              ? { left: `${edge.laneX.toFixed(1)}px` }
-              : { left: `${edge.laneX.toFixed(1)}px`, height: `${(edge.entry * 100).toFixed(1)}%` };
-        return h('span', {
-          key: `${edge.key}-${kind}${fullHeight === true && kind === 'v' ? '-full' : ''}`,
-          className: `dsh-teams-flow-stack-wire dsh-teams-flow-stack-wire-${kind}`,
-          'data-status': edge.status,
-          'data-active': active ? 'true' : undefined,
-          'data-dim': chain !== undefined && !active ? 'true' : undefined,
-          'aria-hidden': 'true',
-          style,
-        });
-      };
-      return h(
-        'div',
-        {
-          className: 'dsh-teams-flow-stack',
-          role: 'group',
-          'aria-label': t('flow.stackLabel').replace('{n}', String(steps.length)),
-        },
-        ...steps.map((step, index) => {
-          const deps = Array.isArray(step.deps) ? [...new Set(step.deps)] : [];
-          const depsText =
-            deps.length === 0 ? t('task.noDeps') : `${t('task.deps')}：${deps.map(labelOf).join('、')}`;
-          const seam = index === 0 ? undefined : stack.seams[index - 1];
-          const incoming = stack.incoming.get(index) ?? [];
-          // 跨过本行继续向下的长边：在卡左侧通道里补满高竖线，线不会在中间某张卡处断掉
-          const passing = stack.edges.filter((edge) => edge.fromIndex < index && edge.toIndex > index);
-          return h(
-            'div',
-            { className: 'dsh-teams-flow-stack-row', key: step.id, 'data-row': String(index) },
-            // 行间缝：把跨过这一行的上游竖线补齐，隔行的依赖也能一路连下来
-            seam === undefined || seam.edges.length === 0
-              ? null
-              : h(
-                  'div',
-                  { className: 'dsh-teams-flow-stack-seam', 'aria-hidden': 'true' },
-                  ...seam.edges.map((edge) => wireOf(edge, 'v', true)),
-                ),
-            h(FlowCard, {
-              step,
-              t,
-              detailId,
-              pinned: pinnedId === step.id,
-              highlighted: chain !== undefined && chain.has(step.id),
-              tabIndex: 0,
-              childCount: childCount.get(step.id) ?? 0,
-              depsText,
-              onPin,
-              onHover,
-              onFocusNode,
-              onBlurNode,
-              onNavigate,
-            }),
-            // 卡内左侧通道：跨行长边先铺满整行，再画本行上游的竖线 + 水平接入
-            incoming.length === 0 && passing.length === 0
-              ? null
-              : h(
-                  'div',
-                  { className: 'dsh-teams-flow-stack-rail', 'aria-hidden': 'true' },
-                  ...passing.map((edge) => wireOf(edge, 'v', true)),
-                  ...incoming.map((edge) => wireOf(edge, 'v', false)),
-                  ...incoming.map((edge) => wireOf(edge, 'h', false)),
-                ),
-          );
-        }),
-      );
-    }
-
-    /**
+        /**
      * 一轮运行的依赖图：列 = 依赖层级，左→右。
      *
-     * 宽面板用绝对定位节点 + 单层 SVG 曲线（像素坐标，不测量节点）；
-     * 窄于 640px 改为同一批身份卡竖向堆叠，依赖行内标注。`width` 只给测试注入，线上走 ResizeObserver。
+     * 只有一种排布：绝对定位节点 + 单层 SVG 折线（像素坐标，不测量节点）。
+     * 面板多窄都不改卡片形状，超出就靠 `.dsh-teams-flow-viewport` 横向滚动。
      */
-    function FlowDiagram({ run, t, openSession, canOpenSession, width }) {
+    function FlowDiagram({ run, t, openSession, canOpenSession }) {
       const steps = Array.isArray(run.steps) ? run.steps : [];
-      const [measuredWidth, setMeasuredWidth] = React.useState(undefined);
       const [hoverId, setHoverId] = React.useState(undefined);
       const [focusId, setFocusId] = React.useState(undefined);
       const [pinnedId, setPinnedId] = React.useState(undefined);
       const rootRef = React.useRef(null);
 
-      // 宽度实测：首帧同步测一次，之后 100ms 节流；没有 ResizeObserver 就退回窗口 resize
-      React.useEffect(() => {
-        const node = rootRef.current;
-        if (node === null || node === undefined) return undefined;
-        const read = () => {
-          const next = node.clientWidth;
-          if (typeof next === 'number' && Number.isFinite(next) && next > 0) setMeasuredWidth(next);
-        };
-        read();
-        if (typeof ResizeObserver === 'function') {
-          let timer;
-          const observer = new ResizeObserver(() => {
-            clearTimeout(timer);
-            timer = setTimeout(read, 100);
-          });
-          observer.observe(node);
-          return () => {
-            clearTimeout(timer);
-            observer.disconnect();
-          };
-        }
-        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-          window.addEventListener('resize', read);
-          return () => window.removeEventListener('resize', read);
-        }
-        return undefined;
-      }, []);
-
       const layout = React.useMemo(() => flowNodes(steps), [steps]);
-      // 竖排顺序 = 拓扑层序（上游在前），连线布局同时算出，窄宽渲染直接用这份纯函数结果
-      const stack = React.useMemo(() => flowStackLayout(steps), [steps]);
-      const stackOrder = stack.order;
       const nodeById = layout.nodeById;
       // 渲染期先降级：刷新后钉住的节点没了就不显示详情（effect 再清 state）
       const pinned = pinnedId !== undefined && nodeById.has(pinnedId) ? pinnedId : undefined;
@@ -2277,7 +2015,6 @@ window.__ModuleLoader__.load({
 
       if (steps.length === 0) return h('div', { className: 'dsh-teams-muted' }, t('flow.empty'));
 
-      const mode = flowModeFor(width ?? measuredWidth);
       const suffix = String(run.runId ?? 'run').replace(/[^a-zA-Z0-9_-]/g, '-');
       const detailId = `dsh-teams-flow-detail-${suffix}`;
       const markerId = `dsh-teams-flow-${suffix}-arrow`;
@@ -2292,18 +2029,7 @@ window.__ModuleLoader__.load({
           clearPin();
           return;
         }
-        let next;
-        if (mode === 'stack') {
-          // 竖排：↑↓ 按视觉顺序前后移动，Home/End 到首末；←→ 不改变焦点
-          const index = stackOrder.findIndex((step) => step.id === id);
-          if (index < 0) return;
-          if (key === 'ArrowUp') next = stackOrder[Math.max(0, index - 1)]?.id;
-          else if (key === 'ArrowDown') next = stackOrder[Math.min(stackOrder.length - 1, index + 1)]?.id;
-          else if (key === 'Home') next = stackOrder[0]?.id;
-          else if (key === 'End') next = stackOrder[stackOrder.length - 1]?.id;
-        } else {
-          next = flowNavigate(layout.layers, id, key);
-        }
+        const next = flowNavigate(layout.layers, id, key);
         if (next === undefined) return;
         const root = rootRef.current;
         if (root === null || root === undefined || typeof root.querySelectorAll !== 'function') return;
@@ -2313,24 +2039,9 @@ window.__ModuleLoader__.load({
           break;
         }
       };
-      const body =
-        mode === 'stack'
-          ? h(FlowStack, {
-              stack,
-              t,
-              pinnedId: pinned,
-              detailId,
-              chain,
-              childCount: layout.childCount,
-              onPin: setPin,
-              onHover: (id) => {
-                if (pinned === undefined) setHoverId(id);
-              },
-              onFocusNode: (id) => setFocusId(id),
-              onBlurNode: (id) => setFocusId((current) => (current === id ? undefined : current)),
-              onNavigate: focusStep,
-            })
-          : h(
+      // 只有一种布局：横向依赖图 + 容器横向滚动。
+      // 面板再窄也不改卡片形状（116px 固定宽），靠 overflow-x 滚动看全图。
+      const body = h(
               'div',
               {
                 className: 'dsh-teams-flow-canvas',
@@ -2369,7 +2080,6 @@ window.__ModuleLoader__.load({
         'div',
         {
           className: 'dsh-teams-flow',
-          'data-mode': mode,
           ref: rootRef,
           onKeyDown: (event) => {
             if (event.key === 'Escape' && pinned !== undefined) {
@@ -2385,8 +2095,7 @@ window.__ModuleLoader__.load({
               target === event?.currentTarget ||
               target?.className === 'dsh-teams-flow-viewport' ||
               target?.className === 'dsh-teams-flow-canvas' ||
-              target?.className === 'dsh-teams-flow-stack' ||
-              target?.className === 'dsh-teams-flow-stack-row';
+              target?.className === 'dsh-teams-flow-canvas';
             if (blank) clearPin();
           },
         },

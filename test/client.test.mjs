@@ -660,9 +660,13 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /dsh-teams-flow-edges/, '边层是独立 SVG');
   assert.match(source, /function flowChain\(/, '悬停要算完整上下游链');
   assert.match(source, /function flowDetail\(/, '钉住要能算负责人/未满足前置/下游解锁');
-  assert.match(source, /function flowModeFor\(/, '窄宽度要能切换排布');
-  assert.match(source, /const FLOW_STACK_WIDTH = 640/, '640px 以下卡片竖向堆叠');
-  assert.match(source, /function FlowStack\(/, '窄面板复用身份卡竖向堆叠');
+  // 现在只有一种排布：面板再窄也不切换布局、不改卡片形状，超出靠容器横向滚动
+  assert.doesNotMatch(source, /function flowModeFor\(/, '不应再有按宽度切换布局的分支');
+  assert.match(source, /dsh-teams-flow-viewport/, '横向滚动容器还在');
+  // 竖排那套（常量 / 组件 / 布局纯函数 / 样式）已整体删除，只留一种排布
+  for (const gone of ['FLOW_STACK_WIDTH', 'FLOW_STACK_RAIL', 'function FlowStack(', 'function flowStackLayout(', 'dsh-teams-flow-stack', 'dsh-teams-flow-card-stack']) {
+    assert.ok(!source.includes(gone), `${gone} 应已删除`);
+  }
   assert.ok(!/function FlowList\(/.test(source), '不再保留纯列表视图');
   assert.match(source, /function FlowDetail\(/, '钉住后渲染详情面板');
   assert.match(source, /tabIndex: 0,/, '每个节点都要能 Tab 聚焦');
@@ -698,7 +702,7 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /\.dsh-teams-flow-edge\[data-active="true"\]/, '高亮边用品牌色');
   assert.match(source, /\.dsh-teams-flow-card\[data-pinned="true"\]/, '钉住要有可见描边');
   assert.match(source, /\.dsh-teams-flow-card\[data-dim="true"\] \.dsh-teams-flow-stage/, '无关节点只淡舞台');
-  assert.match(source, /\.dsh-teams-flow\[data-mode="stack"\] \.dsh-teams-flow-detail-grid/, '窄面板详情单列');
+  assert.ok(!source.includes('data-mode="stack"'), '不再有竖排模式的专属样式');
 
   // 鲸鱼形象：内联 SVG（不引外部图片）+ 每个角色不同装扮
   // 形象：矢量（描摹自原画），加载失败退回手绘鲸鱼
@@ -1958,7 +1962,7 @@ function nodeRects(flowBox) {
 
 test('依赖图：真 SVG 贝塞尔连接 9 节点，分层坐标不重叠也不越界', async () => {
   const { flowBox } = await mountDag();
-  assert.equal(flowBox.tree.props['data-mode'], 'graph', '宽面板画曲线');
+  assert.equal(flowBox.tree.props['data-mode'], undefined, '不再有按宽度切换的模式属性');
   const canvas = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
   assert.ok(canvas, '应有绝对定位画布');
   // 5 层 × 116 + 4 × 56 = 804；3 行 × 180 + 2 × 10 = 560
@@ -2116,207 +2120,15 @@ test('依赖图：Tab 进每个节点、Enter 钉住，焦点态有可见描边'
   const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
   assert.match(source, /dsh-teams-flow-card\[data-clickable="true"\]:focus-visible\{outline:2px/,
     '焦点态要有描边，不能只靠颜色');
-  assert.match(source, /\.dsh-teams-flow-card-stack\{[^}]*width:min\(100%,220px\)/,
-    '窄宽恢复竖卡，宽度上限 220px');
-  assert.match(source, /\.dsh-teams-flow-card-stack\{[^}]*margin-left:28px/,
-    '竖卡左边缘落在左侧连线通道之后');
-  assert.doesNotMatch(source, /\.dsh-teams-flow-card-stack\{[^}]*flex-direction:row/,
-    '窄宽不再是全宽横条');
+  // 只有一种卡片：固定 116px，面板再窄也不改形状
+  assert.match(source, /\.dsh-teams-flow-card\{[^}]*width:116px/, '卡片宽度固定 116px，不随面板变形');
+  assert.match(source, /\.dsh-teams-flow-viewport\{[^}]*overflow-x:auto/, '超出时靠容器横向滚动');
+  assert.ok(!source.includes('dsh-teams-flow-card-stack'), '不应再有第二套卡片');
 });
 
-test('依赖图：360px 窄面板保留身份卡竖向堆叠，不再退化为纯列表', async () => {
-  const opened = [];
-  const run = {
-    ...FLOW_DAG,
-    runId: 'run-stack',
-    steps: FLOW_DAG.steps.map((step) =>
-      step.id === 'e'
-        ? { ...step, metrics: { steps: 5, inputTokens: 800, outputTokens: 400, cacheReadTokens: 1200 } }
-        : step,
-    ),
-  };
-  const { flowBox } = await mountDag(run, {
-    width: 360,
-    uiWorkspace: { openSession: (id) => opened.push(id) },
-  });
-  assert.equal(flowBox.tree.props['data-mode'], 'stack');
-  assert.equal(componentNamed(flowBox.tree, 'FlowEdges'), undefined, '窄宽不挂曲线层');
-  assert.equal(
-    collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-node').length,
-    0,
-    '窄宽没有绝对定位节点',
-  );
+;
 
-  const stack = renderDirect(componentNamed(flowBox.tree, 'FlowStack'));
-  assert.equal(stack.props.role, 'group');
-  assert.equal(stack.props['aria-label'], 'flow.stackLabel');
-  const cards = collect(stack, (node) => node.type?.name === 'FlowCard');
-  assert.equal(cards.length, 9, '9 张身份卡，而不是列表行');
-  assert.equal(collect(stack, (node) => node.props?.className === 'dsh-teams-flow-list-row').length, 0);
-
-  const cardE = cards.find((node) => node.props.step.id === 'e');
-  assert.equal(cardE.props.depsText, 'task.deps：架构师、UI 设计师', '依赖改为行内标注');
-  const cardTree = renderDirect(cardE);
-  assert.equal(cardTree.props.className.includes('dsh-teams-flow-card-stack'), true, '窄宽用的是竖卡身份牌');
-  const textOf = (name) => collect(cardTree, (node) => node.props?.className === name)[0];
-  assert.equal(textOf('dsh-teams-flow-role').children[0], '测试工程师', '角色名');
-  assert.equal(textOf('dsh-teams-flow-state').children[1], 'task.running', '状态胶囊');
-  assert.ok(textOf('dsh-teams-flow-stage'), '立绘舞台');
-  const usage = textOf('dsh-teams-flow-usage');
-  assert.deepEqual(
-    usage.children.map((node) => [node.children[0].children[0], node.children[1].children[0]]),
-    [['flow.steps', '5'], ['flow.tokens', '1.2k'], ['flow.cache', '1.2k']],
-    '步数 / token / 缓存仍在卡内',
-  );
-  assert.equal(textOf('dsh-teams-flow-deps').children[0], 'task.deps：架构师、UI 设计师');
-
-  // 内容与宽视图同源：同一张 FlowCard 渲染出的信息项必须一致
-  const wide = await mountDag(run, { width: 900 });
-  const wideCard = collect(wide.flowBox.tree, (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === 'e')[0];
-  const summary = (tree) => {
-    const pick = (name) => collect(tree, (node) => node.props?.className === name)[0];
-    return {
-      role: pick('dsh-teams-flow-role').children[0],
-      state: pick('dsh-teams-flow-state').children[1],
-      stage: pick('dsh-teams-flow-stage') !== undefined,
-      usage: pick('dsh-teams-flow-usage').children.map((node) => [
-        node.children[0].children[0],
-        node.children[1].children[0],
-      ]),
-    };
-  };
-  assert.deepEqual(summary(cardTree), summary(renderDirect(wideCard)), '两种排布共用同一份卡片内容');
-
-  // 钉住 / 详情 / 打开会话在窄宽度下照常可用（d 带 childId）
-  const cardD = cards.find((node) => node.props.step.id === 'd');
-  cardD.props.onPin('d');
-  const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
-  assert.ok(detail, '窄宽也能钉住看详情');
-  assert.deepEqual(
-    detailFields(detail).map(([label]) => label),
-    ['flow.detail.owner', 'flow.detail.unmet', 'flow.detail.unlocked', 'flow.detail.model'],
-    '详情字段齐全',
-  );
-  const openButton = collect(
-    detail,
-    (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-detail-open'),
-  )[0];
-  assert.equal(openButton.props.disabled, false);
-  openButton.props.onClick();
-  assert.deepEqual(opened, ['child-d'], '打开会话仍走详情入口');
-  collect(detail, (node) => node.props?.className === 'dsh-teams-flow-detail-close')[0].props.onClick();
-  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '取消钉住');
-});
-
-test('窄宽流程图：纯函数把每条上游依赖排进左侧通道，多上游分道且状态色与宽视图同源', async () => {
-  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
-  // 纯函数：只吃 steps（拓扑层序由 layersOf 算），不读 clientWidth / getBoundingClientRect
-  assert.match(source, /function flowStackLayout\(steps, railWidth = FLOW_STACK_RAIL\)/, '应有窄宽连线布局纯函数');
-  assert.ok(
-    !/function flowStackLayout[\s\S]{0,2600}(clientWidth|getBoundingClientRect)/.test(source),
-    '窄宽连线布局不得依赖真实 DOM 尺寸测量',
-  );
-  for (const status of ['done', 'failed', 'running', 'pending']) {
-    assert.match(
-      source,
-      new RegExp(`\\.dsh-teams-flow-stack-wire\\[data-status="${status}"\\]`),
-      `窄宽连线要有 ${status} 配色（与宽视图同一状态语义）`,
-    );
-  }
-  assert.match(
-    source,
-    /dsh-teams-flow-stack-wire-v\[data-status="pending"\][\s\S]{0,160}repeating-linear-gradient/,
-    '未到状态用灰色虚线',
-  );
-
-  const { flowBox } = await mountDag(FLOW_DAG, { width: 360 });
-  const stackNode = componentNamed(flowBox.tree, 'FlowStack');
-  const stack = stackNode.props.stack;
-  assert.ok(stack, 'FlowStack 应收到纯函数算出的连线布局');
-  assert.deepEqual(
-    stack.order.map((step) => step.id),
-    ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'],
-    '竖排顺序 = 拓扑层序（上游在前）',
-  );
-  assert.equal(stack.edges.length, 12, '12 条上游依赖各有一条连线');
-  const indexOf = (id) => stack.order.findIndex((step) => step.id === id);
-  const edge = (from, to) => stack.edges.find((item) => item.fromId === from && item.toId === to);
-  assert.equal(edge('a', 'b').status, 'done', '两侧都完成 = 绿');
-  assert.equal(edge('b', 'e').status, 'running', '指向进行中 = 黄');
-  assert.equal(edge('c', 'f').status, 'pending', '尚未到达 = 灰');
-
-  // 汇入 e 的两条上游：不同通道、不同接入高度，能看出多上游
-  const intoE = stack.incoming.get(indexOf('e'));
-  assert.equal(intoE.length, 2);
-  assert.notEqual(intoE[0].laneX, intoE[1].laneX, '多上游各占一条竖线通道');
-  assert.notEqual(intoE[0].entry, intoE[1].entry, '接入点沿卡片高度错开');
-  // e 正上方的缝里能同时看到这两条边；区间着色保证同缝竖线不重叠
-  const seamAboveE = stack.seams[indexOf('e') - 1];
-  assert.deepEqual(
-    seamAboveE.edges.map((item) => item.key).filter((key) => key.endsWith('->e')).sort(),
-    ['b->e', 'c->e'],
-    '跨缝竖线从上游一路补到 e',
-  );
-  for (const seam of stack.seams) {
-    const xs = seam.edges.map((item) => item.laneX);
-    assert.equal(new Set(xs).size, xs.length, `第 ${seam.index} 道缝的竖线不得共道`);
-  }
-
-  // 渲染层：每张有上游的卡一条 rail，行间缝各一条；e 的通道样式来自布局坐标
-  const tree = renderDirect(stackNode);
-  const rows = collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-row');
-  assert.equal(rows.length, 9);
-  assert.equal(
-    collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-rail').length,
-    8,
-    '除根节点 a 外每张卡都有左侧接入通道',
-  );
-  assert.equal(
-    collect(tree, (node) => node.props?.className === 'dsh-teams-flow-stack-seam').length,
-    8,
-    '9 行之间有 8 道缝',
-  );
-  const rowE = rows.find((node) => node.props['data-row'] === '4');
-  const railE = collect(rowE, (node) => node.props?.className === 'dsh-teams-flow-stack-rail')[0];
-  const wires = collect(railE, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-stack-wire'));
-  const vertical = wires.filter((node) => node.props.className.includes('-v'));
-  const horizontal = wires.filter((node) => node.props.className.includes('-h'));
-  // e 行：b->e / c->e 两条入线，另有 c->f、d->g 两条跨行长边（不能在某张卡处断线）
-  assert.equal(vertical.length, 4, '两条接入竖线 + 两条穿过本行的长边');
-  assert.equal(horizontal.length, 2, '两段水平接入');
-  assert.equal(new Set(vertical.map((node) => node.props.style.left)).size, 4, '竖线各占一道');
-  assert.equal(new Set(horizontal.map((node) => node.props.style.top)).size, 2, '接入高度不同');
-  assert.deepEqual(
-    horizontal.map((node) => node.props['data-status']),
-    ['running', 'running'],
-    'e 为进行中，两路入线都是黄',
-  );
-
-  // 失败上游 + 未到下游：同一张卡的入线各按自己那条边的状态着色
-  const failRun = {
-    runId: 'run-wire-fail',
-    phase: 'running',
-    subject: '失败传播',
-    steps: [
-      { id: 'x', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
-      { id: 'y', role: 'executor', roleName: '开发执行者', status: 'failed', deps: ['x'] },
-      { id: 'z', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['x', 'y'] },
-    ],
-  };
-  const { flowBox: failBox } = await mountDag(failRun, { width: 360 });
-  const failStack = componentNamed(failBox.tree, 'FlowStack').props.stack;
-  const intoZ = failStack.incoming.get(2);
-  assert.deepEqual(intoZ.map((item) => item.status).sort(), ['failed', 'pending'], '汇入同一张卡的两条边状态各自成立');
-  const failTree = renderDirect(componentNamed(failBox.tree, 'FlowStack'));
-  const rowZ = collect(failTree, (node) => node.props?.className === 'dsh-teams-flow-stack-row')[2];
-  const railZ = collect(rowZ, (node) => node.props?.className === 'dsh-teams-flow-stack-rail')[0];
-  assert.deepEqual(
-    [...new Set(collect(railZ, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-stack-wire'))
-      .map((node) => node.props['data-status']))].sort(),
-    ['failed', 'pending'],
-    '失败红 / 未到灰在汇入点同时可见',
-  );
-});
+;
 
 test('折叠行样式：独立卡底 + 圆角，标题 500、元信息次级色，行边界与线段进度贴底内缩', async () => {
   const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
@@ -2359,72 +2171,21 @@ test('折叠行样式：独立卡底 + 圆角，标题 500、元信息次级色�
   );
 });
 
-test('回归：360/320px 窄面板渲染身份卡，而不是纯列表行', async () => {
+test('回归：360/320px 窄面板仍是依赖图，卡片不变形、靠横向滚动看全', async () => {
   for (const width of [360, 320]) {
     const { flowBox } = await mountDag(FLOW_DAG, { width });
-    assert.equal(flowBox.tree.props['data-mode'], 'stack', `${width}px 走卡片堆叠`);
-    const stack = renderDirect(componentNamed(flowBox.tree, 'FlowStack'));
-    const cards = collect(stack, (node) => node.type?.name === 'FlowCard');
-    assert.equal(cards.length, 9, `${width}px 仍渲染 9 张身份卡`);
+    // 不再按宽度切换布局：任何宽度都是同一张依赖图
+    assert.equal(flowBox.tree.props['data-mode'], undefined, `${width}px 不再有模式切换`);
+    const canvas = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
+    assert.ok(canvas, `${width}px 仍渲染绝对定位画布`);
+    assert.equal(collect(flowBox.tree, (node) => node.type?.name === 'FlowCard').length, 9, `${width}px 仍渲染 9 张卡`);
     assert.equal(
-      collect(stack, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-list')).length,
+      collect(flowBox.tree, (node) => String(node.props?.className ?? '').includes('dsh-teams-flow-list')).length,
       0,
-      `${width}px 不应再出现列表行`,
+      `${width}px 不应出现列表行`,
     );
-    for (const node of cards.slice(0, 3)) {
-      const tree = renderDirect(node);
-      assert.ok(collect(tree, (item) => item.props?.className === 'dsh-teams-flow-stage'), '立绘舞台');
-      assert.ok(collect(tree, (item) => item.props?.className === 'dsh-teams-flow-role'), '角色名');
-      assert.ok(collect(tree, (item) => item.props?.className === 'dsh-teams-flow-state'), '状态胶囊');
-    }
+    assert.ok(edgePaths(flowBox).length > 0, `${width}px 连线仍在（不是裸卡片）`);
   }
-});
-
-test('依赖图：flowModeFor 只有 graph/stack，list 视图与样式已彻底移除', async () => {
-  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
-  assert.match(source, /width < FLOW_STACK_WIDTH \? 'stack' : 'graph'/,
-    '窄宽返回 stack、其余返回 graph');
-  assert.ok(!/mode === 'list'/.test(source), '不再有 list 分支');
-  assert.ok(!/data-mode="list"/.test(source), '不再有 list 模式样式');
-  assert.ok(!/function FlowList\(/.test(source), '不再保留列表组件');
-  assert.ok(!/dsh-teams-flow-list/.test(source), '不再保留列表类名与样式');
-});
-
-test('依赖图：窄宽卡片按拓扑层序堆叠，Home/End/↑↓ 按视觉顺序移动焦点', async () => {
-  const { flowBox } = await mountDag(FLOW_DAG, { width: 360 });
-  const stackCardNodes = () =>
-    collect(renderDirect(componentNamed(flowBox.tree, 'FlowStack')), (node) => node.type?.name === 'FlowCard');
-  const cards = stackCardNodes();
-  assert.deepEqual(
-    cards.map((node) => node.props.step.id),
-    ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'],
-    '竖排按拓扑层序：上游在前',
-  );
-
-  // 测试替身没有 DOM focus：用最小元素桩验证 focusStep 目标
-  const focused = [];
-  const elements = cards.map((node) => ({
-    getAttribute: (name) => (name === 'data-step-id' ? String(node.props.step.id) : undefined),
-    focus() {
-      focused.push(String(node.props.step.id));
-    },
-  }));
-  flowBox.tree.props.ref.current = { querySelectorAll: () => elements };
-  const press = (id, key) => {
-    const node = cards.find((item) => item.props.step.id === id);
-    renderDirect(node).props.onKeyDown({ key, preventDefault() {} });
-  };
-
-  press('e', 'Home');
-  assert.deepEqual(focused, ['a'], 'Home 到第一张卡');
-  press('e', 'End');
-  assert.deepEqual(focused, ['a', 'i'], 'End 到最后一张卡');
-  press('e', 'ArrowDown');
-  assert.deepEqual(focused, ['a', 'i', 'f'], '↓ 按视觉顺序到下一张');
-  press('e', 'ArrowUp');
-  assert.deepEqual(focused, ['a', 'i', 'f', 'd'], '↑ 按视觉顺序到上一张');
-  press('e', 'ArrowLeft');
-  assert.deepEqual(focused, ['a', 'i', 'f', 'd'], '←→ 不改变竖排焦点');
 });
 
 test('依赖图：窄宽点击钉住后，空白点击与卡片 Esc 照常取消钉住', async () => {
@@ -2432,15 +2193,15 @@ test('依赖图：窄宽点击钉住后，空白点击与卡片 Esc 照常取消
   const cardOfId = (id) =>
     renderDirect(
       collect(
-        renderDirect(componentNamed(flowBox.tree, 'FlowStack')),
+        flowBox.tree,
         (node) => node.type?.name === 'FlowCard' && node.props?.step?.id === id,
       )[0],
     );
   cardOfId('d').props.onClick();
   assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '窄宽点击可钉住');
   const rootProps = flowBox.tree.props;
-  rootProps.onClick({ target: { className: 'dsh-teams-flow-stack' }, currentTarget: rootProps });
-  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '点堆叠区空白也取消钉住');
+  rootProps.onClick({ target: { className: 'dsh-teams-flow-canvas' }, currentTarget: rootProps });
+  assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, '点画布空白取消钉住');
 
   cardOfId('d').props.onClick();
   assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '再次钉住');
@@ -2493,7 +2254,7 @@ test('依赖图降级：空图 / 单节点 / 环 / 悬空依赖都不崩', async
 test('依赖图：648/804px 进图模式，详情在横向滚动视口之外（滚到最右仍可见）', async () => {
   for (const width of [648, 804]) {
     const { flowBox } = await mountDag(FLOW_DAG, { width });
-    assert.equal(flowBox.tree.props['data-mode'], 'graph', `${width}px 仍画图`);
+    assert.equal(flowBox.tree.props['data-mode'], undefined, `${width}px 不切换布局`);
     const viewport = collect(flowBox.tree, (node) => node.props?.className === 'dsh-teams-flow-viewport')[0];
     assert.ok(viewport, '横向滚动应隔离到独立视口');
     const canvas = collect(viewport, (node) => node.props?.className === 'dsh-teams-flow-canvas')[0];
@@ -2832,12 +2593,10 @@ test('依赖图：文档级 Esc 取消钉住，但已被确认框 preventDefault
   const runBox = mountRunItem(React, runsBox, FLOW_DAG);
   let flowBox;
   React.withEffects(() => {
-    flowBox = mountFlow(React, runBox, { width: undefined });
+    flowBox = mountFlow(React, runBox);
   });
-  // 首帧没有注入宽度，按容器实测：给替身一个 900px 宽的根节点
-  flowBox.tree.props.ref.current = { clientWidth: 900 };
-  React.flushEffects();
-  assert.equal(flowBox.tree.props['data-mode'], 'graph');
+  // 布局不再依赖容器宽度实测：任何宽度都是同一张依赖图
+  assert.equal(flowBox.tree.props['data-mode'], undefined);
 
   const enterPin = () =>
     React.withEffects(() => {
@@ -2859,54 +2618,7 @@ test('依赖图：文档级 Esc 取消钉住，但已被确认框 preventDefault
   assert.ok(componentNamed(flowBox.tree, 'FlowDetail'), '已 preventDefault 的 Esc 属于停止确认框，不得抢');
 });
 
-test('依赖图：窄于 640px 切卡片堆叠——边界 639/640，宽度来自容器实测', async () => {
-  const narrow = await mountDag(FLOW_DAG, { width: 639 });
-  assert.equal(narrow.flowBox.tree.props['data-mode'], 'stack', '639px 应竖排卡片');
-  assert.equal(componentNamed(narrow.flowBox.tree, 'FlowEdges'), undefined);
-  assert.equal(
-    collect(renderDirect(componentNamed(narrow.flowBox.tree, 'FlowStack')), (node) => node.type?.name === 'FlowCard').length,
-    9,
-    '窄宽仍渲染 9 张身份卡',
-  );
-  const wide = await mountDag(FLOW_DAG, { width: 640 });
-  assert.equal(wide.flowBox.tree.props['data-mode'], 'graph', '640px 仍可画图，边界不倒置');
-
-  // 不注入 width，走真实测量路径：effect 读容器 clientWidth，ResizeObserver 跟随时变宽度
-  const realResizeObserver = globalThis.ResizeObserver;
-  class FakeResizeObserver {
-    constructor(callback) {
-      this.callback = callback;
-      FakeResizeObserver.last = this;
-    }
-    observe() {}
-    disconnect() {}
-  }
-  globalThis.ResizeObserver = FakeResizeObserver;
-  try {
-    const { React, workspace } = await mountTeamWorkspace();
-    const runsBox = mountRunsView(React, workspace);
-    const runBox = mountRunItem(React, runsBox, FLOW_DAG);
-    let flowBox;
-    React.withEffects(() => {
-      flowBox = mountFlow(React, runBox, { width: undefined });
-    });
-    const root = { clientWidth: 900 };
-    flowBox.tree.props.ref.current = root;
-    React.flushEffects();
-    assert.equal(flowBox.tree.props['data-mode'], 'graph', '宽度未知先按曲线视图');
-    assert.ok(FakeResizeObserver.last, '应订阅容器尺寸变化');
-
-    root.clientWidth = 480;
-    FakeResizeObserver.last.callback();
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    assert.equal(flowBox.tree.props['data-mode'], 'stack', '拖窄到 480px 后切卡片堆叠（100ms 节流后）');
-    const stack = renderDirect(componentNamed(flowBox.tree, 'FlowStack'));
-    assert.equal(collect(stack, (node) => node.type?.name === 'FlowCard').length, 9);
-  } finally {
-    if (realResizeObserver === undefined) delete globalThis.ResizeObserver;
-    else globalThis.ResizeObserver = realResizeObserver;
-  }
-});
+;
 
 test('依赖图：详情「下游解锁」不把还有其它未满足前置的下游算进去', async () => {
   const { flowBox } = await mountDag();
