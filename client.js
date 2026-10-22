@@ -37,11 +37,9 @@ window.__ModuleLoader__.load({
       'badge.ready': '团队',
       'badge.running': '团队运行中',
       'tab.title': '团队',
-      'view.members': '成员',
       'view.tasks': '任务板',
       'view.log': '运行日志',
       'view.empty': '当前会话还没有团队。用 teams_route 先做路径决策。',
-      'view.noMembers': '尚未派发成员。先 teams_plan 生成计划并批准。',
       'view.noTasks': '尚未生成任务图。用 teams_plan 生成计划。',
       'view.loading': '读取团队状态…',
       'view.unavailable': '无法读取团队状态',
@@ -249,11 +247,9 @@ window.__ModuleLoader__.load({
       'badge.ready': 'Team',
       'badge.running': 'Team running',
       'tab.title': 'Team',
-      'view.members': 'Members',
       'view.tasks': 'Task board',
       'view.log': 'Run log',
       'view.empty': 'No team in this session yet. Run teams_route first to pick a path.',
-      'view.noMembers': 'No members dispatched yet. Run teams_plan and approve it first.',
       'view.noTasks': 'No task graph yet. Run teams_plan to generate a plan.',
       'view.loading': 'Loading team state…',
       'view.unavailable': 'Team state unavailable',
@@ -643,36 +639,49 @@ window.__ModuleLoader__.load({
 .dsh-teams-runs{display:flex;flex-direction:column;gap:8px;}
 .dsh-teams-run{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;
   background:var(--dsw-alias-bg-layer-1);overflow:hidden;}
-/* 折叠行：网格排版，标题不再被 meta 挤成 7 个汉字宽 */
-.dsh-teams-run-head{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) 12px;
-  column-gap:9px;row-gap:1px;align-items:center;min-height:48px;padding:7px 10px 10px;
+/* 折叠行：三列层级 —— 立绘 ｜（标题 + 元信息小字）｜ 状态与进度（靠右）。
+   层级靠字号/字重/灰度：标题 13/600，元信息 11px 次级灰，数字等宽。 */
+.dsh-teams-run-head{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) auto 12px;
+  column-gap:10px;row-gap:2px;align-items:center;min-height:36px;padding:8px 10px 14px;
   cursor:pointer;list-style:none;font-size:13px;}
 .dsh-teams-run-head::-webkit-details-marker{display:none;}
 .dsh-teams-run-head:hover{background:var(--dsw-alias-bg-layer-2);}
 .dsh-teams-run-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}
 /* 立绘牌：人物"站"在牌底，全身不裁头 */
-.dsh-teams-run-avatar{grid-row:1 / span 2;align-self:center;width:34px;height:38px;border-radius:11px;
+.dsh-teams-run-avatar{grid-column:1;grid-row:1 / span 2;align-self:center;width:34px;height:38px;border-radius:11px;
   overflow:visible;display:flex;align-items:flex-end;justify-content:center;
   background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}
 .dsh-teams-run-avatar .dsh-teams-whale{margin-bottom:-2px;}
-.dsh-teams-run-subject{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;color:var(--dsw-alias-label-primary);}
-.dsh-teams-run-meta{grid-column:2;display:flex;align-items:center;gap:6px;min-width:0;
-  font-size:11px;color:var(--dsw-alias-label-secondary);}
-.dsh-teams-run-meta > span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dsh-teams-run-chevron{grid-row:1 / span 2;grid-column:3;justify-self:end;font-size:12px;line-height:1;
+.dsh-teams-run-subject{grid-column:2;grid-row:1;font-size:13px;font-weight:600;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);}
+.dsh-teams-run-meta{grid-column:2;grid-row:2;display:flex;align-items:center;gap:6px;min-width:0;
+  font-size:11px;line-height:14px;color:var(--dsw-alias-label-secondary);}
+.dsh-teams-run-meta > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.dsh-teams-run-meta > span + span::before{content:"·";margin-right:6px;opacity:.6;}
+/* 第三列：状态胶囊在上、完成数在下，整体靠右；等宽数字避免刷新时抖动 */
+.dsh-teams-run-stats{grid-column:3;grid-row:1 / span 2;display:flex;flex-direction:column;
+  align-items:flex-end;gap:3px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.dsh-teams-run-count{font-size:12px;font-weight:600;line-height:15px;color:var(--dsw-alias-label-primary);}
+.dsh-teams-run-chevron{grid-row:1 / span 2;grid-column:4;justify-self:end;font-size:12px;line-height:1;
   color:var(--dsw-alias-label-secondary);transition:transform .16s ease;}
 .dsh-teams-run[open] .dsh-teams-run-chevron{transform:rotate(135deg);}
-/* 进度条贴折叠行底边：折叠时也能看完成度 */
-.dsh-teams-run-bar{position:absolute;left:0;right:0;bottom:0;height:3px;
-  background:var(--dsw-alias-border-l1);}
-.dsh-teams-run-bar > i{display:block;height:100%;background:var(--dsw-alias-state-success-primary);}
+/* 分段进度贴折叠行底边：一段 = 一个任务（拓扑序），段数随任务数自动增减；
+   绿=完成、黄=进行中/就绪、灰=未开始、红=失败。 */
+.dsh-teams-run-bar{position:absolute;left:12px;right:12px;bottom:6px;height:4px;
+  display:flex;gap:2px;border-radius:2px;}
+.dsh-teams-run-seg{flex:1 1 0;min-width:2px;height:100%;border-radius:2px;
+  background:var(--dsw-alias-border-l2);}
+.dsh-teams-run-seg[data-status="done"]{background:var(--dsw-alias-state-success-primary);}
+.dsh-teams-run-seg[data-status="running"]{background:var(--dsw-alias-state-warn-primary);}
+.dsh-teams-run-seg[data-status="failed"]{background:var(--dsw-alias-state-error-primary);}
+.dsh-teams-run-seg[data-status="pending"]{background:var(--dsw-alias-border-l2);}
 .dsh-teams-run-body{padding:0 10px 10px;}
 .dsh-teams-run[data-phase="running"]{border-color:var(--dsw-alias-brand-primary);}
 /* 停止入口只出现在当前轮的标题行：多一列，其余轮次布局零位移 */
-.dsh-teams-run-head[data-has-stop="true"]{grid-template-columns:34px minmax(0,1fr) auto 12px;}
-.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-chevron{grid-column:4;}
-.dsh-teams-run-stop{grid-row:1 / span 2;grid-column:3;justify-self:end;font-size:11px;
+.dsh-teams-run-head[data-has-stop="true"]{grid-template-columns:34px minmax(0,1fr) auto auto 12px;}
+.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-chevron{grid-column:5;}
+.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-stop{grid-column:4;}
+.dsh-teams-run-stop{grid-row:1 / span 2;grid-column:4;justify-self:end;font-size:11px;
   padding:2px 9px;white-space:nowrap;
   color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 65%,var(--dsw-alias-label-primary));
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));}
@@ -713,13 +722,38 @@ window.__ModuleLoader__.load({
 .dsh-teams-flow-canvas{position:relative;flex:none;}
 .dsh-teams-flow-node{position:absolute;z-index:1;}
 .dsh-teams-flow-edges{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:visible;}
+/* 边按下游状态着色：绿=两侧都完成、红=失败、黄=指向进行中、灰虚线=尚未到达 */
 .dsh-teams-flow-edge{fill:none;stroke:var(--dsw-alias-label-secondary);stroke-width:1;opacity:.45;
-  transition:opacity .15s ease,stroke .15s ease;}
-.dsh-teams-flow-edge[data-active="true"]{stroke:var(--dsw-alias-brand-primary);stroke-width:1.5;opacity:.9;}
+  transition:opacity .15s ease,stroke .15s ease,stroke-width .15s ease;}
+.dsh-teams-flow-edge[data-status="done"]{stroke:var(--dsw-alias-state-success-primary);
+  stroke-width:1.5;opacity:.75;stroke-dasharray:none;}
+.dsh-teams-flow-edge[data-status="failed"]{stroke:var(--dsw-alias-state-error-primary);
+  stroke-width:1.5;opacity:.85;stroke-dasharray:none;}
+.dsh-teams-flow-edge[data-status="running"]{stroke:var(--dsw-alias-state-warn-primary);
+  stroke-width:1.5;opacity:.9;stroke-dasharray:none;}
+.dsh-teams-flow-edge[data-status="pending"]{stroke:var(--dsw-alias-label-secondary);stroke-dasharray:5 4;}
+/* 上下游链高亮只加粗/提亮，不覆盖状态色（否则"到哪一步"的信息就丢了） */
+.dsh-teams-flow-edge[data-active="true"]{stroke-width:2;opacity:1;}
 .dsh-teams-flow-edge[data-dim="true"]{opacity:.12;}
-.dsh-teams-run[data-phase="running"] .dsh-teams-run-bar > i{background:var(--dsw-alias-brand-primary);}
+/* 连线流光：光带沿折线去程 → 停在卡边，绕卡一周后原路返回，3.2s 一个循环。
+   相位与卡片环带共用（0–34% 去程、34–68% 绕卡、68–94% 回程）。 */
+.dsh-teams-flow-edge-pulse{fill:none;stroke:var(--dsw-alias-state-warn-primary);stroke-width:2;
+  stroke-linecap:round;stroke-dasharray:12 88;stroke-dashoffset:100;pointer-events:none;
+  animation:dsh-teams-flow-travel 3.2s linear infinite;}
+.dsh-teams-flow-edge-pulse[data-dim="true"]{opacity:.15;}
+@keyframes dsh-teams-flow-travel{
+  /* dashoffset 100 = 光带停在起点（上游卡右边）；12 = dash 长度，光带正好走到终点（目标卡左边）。
+     34–66% 停在卡边，等环带绕完一周再原路返回，94% 回到起点，循环无跳变。 */
+  0%{stroke-dashoffset:100;}
+  34%{stroke-dashoffset:12;}
+  66%{stroke-dashoffset:12;}
+  94%,100%{stroke-dashoffset:100;}
+}
 @media (prefers-reduced-motion:reduce){
-  .dsh-teams-flow-glow,.dsh-teams-skeleton > span::after,
+  /* 减少动效：流光静止——连线光带直接隐藏，环带画成完整的静态黄边 */
+  .dsh-teams-flow-edge-pulse{display:none;}
+  .dsh-teams-flow-ring-band{animation:none;stroke-dasharray:none;stroke-dashoffset:0;opacity:1;}
+  .dsh-teams-skeleton > span::after,
   .dsh-teams-flow-card[data-status="running"] .dsh-teams-dot{animation:none;}
   /* 不要翻动，只保留一点点位移 */
   .dsh-teams-flow-card[data-clickable="true"]:hover{transform:translateY(-2px);}
@@ -784,7 +818,7 @@ window.__ModuleLoader__.load({
   border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 50%,var(--dsw-alias-border-l1));}
 .dsh-teams-flow-card[data-status="blocked"]::before{content:"";position:absolute;left:0;top:14px;
   bottom:14px;width:2px;border-radius:0 2px 2px 0;background:var(--dsw-alias-state-warn-primary);z-index:3;}
-/* 进行中 / 就绪：边框交给流光环画 */
+/* 进行中 / 就绪：琥珀边框打底；环带只给「进行中」（就绪还没开始跑，不占环） */
 .dsh-teams-flow-card[data-status="running"],
 .dsh-teams-flow-card[data-status="ready"]{--state-color:var(--dsw-alias-state-warn-primary);
   --state-text:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 55%,var(--dsw-alias-label-primary));
@@ -819,25 +853,25 @@ window.__ModuleLoader__.load({
 .dsh-teams-flow-card[data-chain="true"]:not([data-pinned="true"]){
   border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 50%,var(--dsw-alias-border-l1));}
 .dsh-teams-flow-card[data-dim="true"] .dsh-teams-flow-stage{opacity:.35;}
-.dsh-teams-flow-card[data-dim="true"] .dsh-teams-flow-glow{display:none;}
-/* 进行中：黄色流光沿边框环绕转动。
-   ⚠️ inset 必须是 0：绝对定位的包含块是 padding box，写成 -1.5px 时遮罩保留的环
-   正好落在 padding box 之外，会被卡片自己的 overflow:hidden 裁掉 → 流光完全看不见。 */
-.dsh-teams-flow-glow{display:none;position:absolute;inset:0;border-radius:16.5px;z-index:0;
-  padding:1.5px;
-  background:conic-gradient(from 0deg, transparent 0deg, transparent 250deg,
-    var(--dsw-alias-state-warn-primary) 320deg,
-    color-mix(in srgb, var(--dsw-alias-state-warn-primary) 55%, white) 350deg, transparent 360deg);
-  -webkit-mask:linear-gradient(white 0 0) content-box,linear-gradient(white 0 0);
-  -webkit-mask-composite:xor;
-  mask:linear-gradient(white 0 0) content-box,linear-gradient(white 0 0);
-  mask-composite:exclude;
-  animation:dsh-teams-flow-spin 2.4s linear infinite;}
-.dsh-teams-flow-card[data-status="running"] .dsh-teams-flow-glow,
-.dsh-teams-flow-card[data-status="ready"] .dsh-teams-flow-glow{display:block;}
+.dsh-teams-flow-card[data-dim="true"] .dsh-teams-flow-ring{display:none;}
+/* 进行中：黄色流光沿卡片边框环绕一周（SVG 描边 + pathLength=100）。
+   路径从左中起笔 → 上 → 右 → 下 → 回左中，与入边流光同一相位衔成一条连续路径。
+   ⚠️ z-index 必须高于舞台（舞台有不透明底色）：旧实现把光层垫在下面，被舞台挡住大半，
+   只剩信息区露出一块转动的黄块——这就是"黄色方块在卡片里旋转"的真正成因。 */
+.dsh-teams-flow-ring{display:none;position:absolute;inset:0;width:100%;height:100%;z-index:2;
+  overflow:visible;pointer-events:none;}
+.dsh-teams-flow-card[data-status="running"] .dsh-teams-flow-ring{display:block;}
+.dsh-teams-flow-ring-band{fill:none;stroke:var(--dsw-alias-state-warn-primary);stroke-width:2;
+  stroke-linecap:round;stroke-dasharray:14 86;stroke-dashoffset:100;
+  animation:dsh-teams-flow-ring 3.2s linear infinite;}
 .dsh-teams-flow-card > .dsh-teams-flow-stage,
 .dsh-teams-flow-card > .dsh-teams-flow-info{position:relative;z-index:1;}
-@keyframes dsh-teams-flow-spin{to{transform:rotate(360deg);}}
+@keyframes dsh-teams-flow-ring{
+  0%,34%{stroke-dashoffset:100;opacity:0;}
+  35%{stroke-dashoffset:99;opacity:1;}
+  68%{stroke-dashoffset:0;opacity:1;}
+  70%,100%{stroke-dashoffset:0;opacity:0;}
+}
 /* 依赖图详情：钉住后展开，2×2 四栏（负责人 / 未满足前置 / 下游解锁 / 模型） */
 .dsh-teams-flow-detail{margin-top:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;
   background:var(--dsw-alias-bg-layer-2);padding:8px 10px;color:var(--dsw-alias-label-primary);}
@@ -902,20 +936,12 @@ window.__ModuleLoader__.load({
 /* 鲸鱼图标 + 装扮挂件 */
 .dsh-teams-whale{position:relative;display:inline-flex;flex:none;align-items:center;justify-content:center;}
 .dsh-teams-whale-accessory{position:absolute;right:-3px;top:-3px;font-size:11px;line-height:1;}
-/* ============ 成员卡与子会话横幅 ============ */
-.dsh-teams-member[data-clickable="true"]{cursor:pointer;}
-.dsh-teams-member[data-clickable="true"]:hover{background:var(--dsw-alias-bg-layer-2);}
-.dsh-teams-member[data-clickable="true"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
-.dsh-teams-member-main{display:flex;align-items:center;gap:8px;}
-.dsh-teams-member-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1;}
-.dsh-teams-avatar{flex:none;width:24px;height:24px;border-radius:8px;display:inline-flex;
-  align-items:center;justify-content:center;background:var(--dsw-alias-bg-layer-2);
-  border:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1;}
+/* ============ 子会话横幅 ============ */
+/* 行尾「去会话」提示（任务标题行共用；成员卡已移除，这里只剩任务行） */
 .dsh-teams-open{flex:none;color:var(--dsw-alias-label-secondary);font-size:16px;opacity:.45;}
-.dsh-teams-member[data-clickable="true"]:hover .dsh-teams-open{opacity:1;color:var(--dsw-alias-brand-primary);}
+.dsh-teams-task-head[data-clickable="true"]:hover .dsh-teams-open{opacity:1;color:var(--dsw-alias-brand-primary);}
 /* 能力缺失时禁用而不是假装可点：cursor + 降透明，点击由「没有 onClick」兜底 */
-.dsh-teams-member[data-disabled="true"],.dsh-teams-task-head[data-disabled="true"]{cursor:not-allowed;}
-.dsh-teams-member[data-disabled="true"] .dsh-teams-open{opacity:.6;}
+.dsh-teams-task-head[data-disabled="true"]{cursor:not-allowed;}
 .dsh-teams-task-head[data-clickable="true"]{cursor:pointer;border-radius:6px;}
 .dsh-teams-task-head[data-clickable="true"]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);
   outline-offset:2px;}
@@ -1416,7 +1442,11 @@ window.__ModuleLoader__.load({
     /* ---------------- 依赖图布局（纯函数：像素坐标 = 列号 × 行号，不测量 DOM） ---------------- */
     const FLOW_CARD_W = 116; // 与 .dsh-teams-flow-card 的固定尺寸一致
     const FLOW_CARD_H = 180;
-    const FLOW_GAP_X = 56; // 列间曲线通道（旧折线通道是 18，贝塞尔要空间）
+    const FLOW_GAP_X = 56; // 列间直角折线通道（竖线走在这里，不压卡片）
+    // 环带路径（viewBox 同卡片 116×180）：左中起笔 → 上 → 右 → 下 → 回左中，
+    // 与入边流光的落点（左中）重合，两段动画因此能接成一条连续路径。
+    const FLOW_RING_PATH =
+      'M1 90 L1 16 A15 15 0 0 1 16 1 L100 1 A15 15 0 0 1 115 16 L115 164 A15 15 0 0 1 100 179 L16 179 A15 15 0 0 1 1 164 Z';
     const FLOW_GAP_Y = 10; // 同层行距
     const FLOW_STACK_WIDTH = 640; // 窄于此宽度改用竖排卡片（依赖曲线会压字，卡片内容不降级）
 
@@ -1524,14 +1554,49 @@ window.__ModuleLoader__.load({
       return edges;
     }
 
-    /** 横向 C 贝塞尔：右中点 → 左中点，控制点各沿水平方向偏 28px。 */
-    function flowEdgePath(from, to) {
+    /** 直角折线（正交路径）：右中点 → 竖走 → 左中点。
+     *  只含 M/L/A，拐角 2px 圆角（不用贝塞尔）；`offset` 让同一列对的并行分支各占一条通道。 */
+    function flowEdgePath(from, to, offset = 0) {
       const x1 = from.x + from.w;
       const y1 = from.y + from.h / 2;
       const x2 = to.x - 2; // 箭头尖贴住卡片左边，不盖住边框
       const y2 = to.y + to.h / 2;
-      const bend = Math.min(28, Math.max(10, (x2 - x1) / 2));
-      return `M${x1} ${y1} C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+      if (y1 === y2) return `M${x1} ${y1} L${x2} ${y2}`; // 同排：一条水平直线
+      const midX = Math.round(x1 + (x2 - x1) / 2 + offset);
+      const dir = y2 > y1 ? 1 : -1;
+      const r = Math.min(2, Math.abs(y2 - y1) / 2);
+      const sweep1 = dir > 0 ? 1 : 0; // 东→南 / 东→北
+      const sweep2 = dir > 0 ? 0 : 1; // 南→东 / 北→东
+      return `M${x1} ${y1} L${midX - r} ${y1} A${r} ${r} 0 0 ${sweep1} ${midX} ${y1 + dir * r} L${midX} ${
+        y2 - dir * r
+      } A${r} ${r} 0 0 ${sweep2} ${midX + r} ${y2} L${x2} ${y2}`;
+    }
+
+    /** 边状态 = 光带流向的节点状态；上游已失败时整条边判红（下游永远到不了）。 */
+    function flowEdgeStatus(edge) {
+      const fromStatus = String(edge.from.step?.status ?? 'pending');
+      const toStatus = String(edge.to.step?.status ?? 'pending');
+      if (fromStatus === 'failed' || toStatus === 'failed') return 'failed';
+      if (toStatus === 'done' || toStatus === 'skipped') return 'done';
+      if (toStatus === 'running' || toStatus === 'ready') return 'running';
+      return 'pending';
+    }
+
+    /** 同一列对的并行边各给一条通道（±3px 起，6px 一档），竖线不重叠、不压卡片。 */
+    function flowEdgeChannels(edges) {
+      const groups = new Map();
+      for (const edge of edges) {
+        const key = `${edge.from.col}->${edge.to.col}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(edge);
+      }
+      const channels = new Map();
+      for (const group of groups.values()) {
+        group.forEach((edge, index) => {
+          channels.set(edge.key, Math.round((index - (group.length - 1) / 2) * 6));
+        });
+      }
+      return channels;
     }
 
     /** 窄面板保留卡片、竖向堆叠（依赖改行内标注）；宽度未知时先按曲线视图，量到窄再切换。 */
@@ -1570,6 +1635,24 @@ window.__ModuleLoader__.load({
 
     const isSettledStep = (step) => step !== undefined && (step.status === 'done' || step.status === 'skipped');
     const stepLabel = (step) => step.roleName ?? step.role ?? String(step.id);
+
+    /**
+     * 进度线段：一段一个任务，顺序 = 拓扑层序（上游在前）再按层内行序。
+     * 段数直接由 steps 长度决定：中途插入任务，段数自动增减。
+     */
+    function runSegments(steps) {
+      return layersOf(steps)
+        .flat()
+        .map((step) => ({ id: step.id, label: stepLabel(step), status: String(step.status ?? 'pending') }));
+    }
+
+    /** 任务状态 → 线段色调：绿=完成、黄=进行中/就绪、红=失败、灰=未开始（受阻算未开始）。 */
+    function segmentTone(status) {
+      if (status === 'done' || status === 'skipped') return 'done';
+      if (status === 'failed') return 'failed';
+      if (status === 'running' || status === 'ready') return 'running';
+      return 'pending';
+    }
 
     /**
      * 钉住后的详情：负责人 / 未满足前置（done、skipped 之外都算）/ 下游解锁 / 模型。
@@ -1623,10 +1706,25 @@ window.__ModuleLoader__.load({
       return undefined;
     }
 
-    /** 曲线层：单层 SVG，画在节点之下；标记 id 带 runId 前缀，避免多轮/多队冲突。 */
+    /** 边层：单层 SVG，画在节点之下；标记 id 带 runId 前缀，避免多轮/多队冲突。
+     *  每条边按目标状态着色（绿/红/黄/灰虚线），指向进行中的边再叠一条流光带。 */
     function FlowEdges({ edges, layout, chain, markerId }) {
       const arrow = (fill) =>
         h('path', { d: 'M0 0 L6 3 L0 6 Z', style: { fill } });
+      const markerOf = (status) => `${markerId}-${status}`;
+      const arrowFills = {
+        done: 'var(--dsw-alias-state-success-primary)',
+        failed: 'var(--dsw-alias-state-error-primary)',
+        running: 'var(--dsw-alias-state-warn-primary)',
+        pending: 'var(--dsw-alias-label-secondary)',
+      };
+      const channels = flowEdgeChannels(edges);
+      const edgeOf = (edge) => ({
+        active: chain !== undefined && chain.has(edge.from.id) && chain.has(edge.to.id),
+        dimmed: chain !== undefined && !(chain.has(edge.from.id) && chain.has(edge.to.id)),
+        status: flowEdgeStatus(edge),
+        d: flowEdgePath(edge.from, edge.to, channels.get(edge.key) ?? 0),
+      });
       return h(
         'svg',
         {
@@ -1640,29 +1738,49 @@ window.__ModuleLoader__.load({
         h(
           'defs',
           null,
-          h(
-            'marker',
-            { id: markerId, viewBox: '0 0 6 6', refX: 5, refY: 3, markerWidth: 6, markerHeight: 6, orient: 'auto' },
-            arrow('var(--dsw-alias-label-secondary)'),
-          ),
-          h(
-            'marker',
-            { id: `${markerId}-on`, viewBox: '0 0 6 6', refX: 5, refY: 3, markerWidth: 6, markerHeight: 6, orient: 'auto' },
-            arrow('var(--dsw-alias-brand-primary)'),
+          ...Object.entries(arrowFills).map(([status, fill]) =>
+            h(
+              'marker',
+              {
+                key: status,
+                id: markerOf(status),
+                viewBox: '0 0 6 6',
+                refX: 5,
+                refY: 3,
+                markerWidth: 6,
+                markerHeight: 6,
+                orient: 'auto',
+              },
+              arrow(fill),
+            ),
           ),
         ),
         ...edges.map((edge) => {
-          const active = chain !== undefined && chain.has(edge.from.id) && chain.has(edge.to.id);
-          const dimmed = chain !== undefined && !active;
+          const info = edgeOf(edge);
           return h('path', {
             key: edge.key,
             className: 'dsh-teams-flow-edge',
-            d: flowEdgePath(edge.from, edge.to),
-            'data-active': active ? 'true' : undefined,
-            'data-dim': dimmed ? 'true' : undefined,
-            markerEnd: `url(#${active ? `${markerId}-on` : markerId})`,
+            d: info.d,
+            'data-status': info.status,
+            'data-active': info.active ? 'true' : undefined,
+            'data-dim': info.dimmed ? 'true' : undefined,
+            markerEnd: `url(#${markerOf(info.status)})`,
           });
         }),
+        // 流光只画在"指向进行中任务的边"上：同一相位与卡片环带衔接（见 CSS keyframes）
+        ...edges
+          .filter((edge) => flowEdgeStatus(edge) === 'running')
+          .map((edge) => {
+            const info = edgeOf(edge);
+            return h('path', {
+              key: `${edge.key}-pulse`,
+              className: 'dsh-teams-flow-edge-pulse',
+              d: info.d,
+              pathLength: '100',
+              'aria-hidden': 'true',
+              'data-dim': info.dimmed ? 'true' : undefined,
+            });
+          }),
       );
     }
 
@@ -1750,8 +1868,23 @@ window.__ModuleLoader__.load({
             }
           },
         },
-        // 流光层：只有"进行中"才转
-        h('span', { className: 'dsh-teams-flow-glow', 'aria-hidden': 'true' }),
+        // 流光环带：只有"进行中"才显示（SVG 描边绕卡片一周，不是旋转的锥形渐变方块）
+        h(
+          'svg',
+          {
+            className: 'dsh-teams-flow-ring',
+            viewBox: '0 0 116 180',
+            preserveAspectRatio: 'none',
+            'aria-hidden': 'true',
+            focusable: 'false',
+          },
+          h('path', {
+            className: 'dsh-teams-flow-ring-band',
+            d: FLOW_RING_PATH,
+            pathLength: '100',
+            vectorEffect: 'non-scaling-stroke',
+          }),
+        ),
         look.accessory === undefined
           ? null
           : h('span', { className: 'dsh-teams-flow-badge', 'aria-hidden': 'true' }, look.accessory),
@@ -2205,14 +2338,10 @@ window.__ModuleLoader__.load({
       // 立绘牌固定用蓝色初版形象（与需求分析师卡片同一个蓝），不随运行状态变色——
       // 状态已经由边框颜色/状态胶囊表达，头像再变一次只会让"这个人是谁"变得难认。
       const accent = WHALE_BLUE;
-      const meta = [
-        run.pathLabel ?? run.path ?? '-',
-        t(`phase.${phase}`),
-        total > 0 ? `${done}/${total}` : '',
-        formatTime(run.finishedAt ?? run.at),
-      ]
-        .filter(Boolean)
-        .join(' · ');
+      const pathLabel = run.pathLabel ?? run.path ?? '-';
+      const timeText = formatTime(run.finishedAt ?? run.at);
+      // 分段进度：一段一个任务（拓扑序），段数随任务数自动增减
+      const segments = total > 0 ? runSegments(steps) : [];
       const subject = String(run.subject ?? t('flow.untitled'));
       return h(
         'details',
@@ -2225,16 +2354,25 @@ window.__ModuleLoader__.load({
         h(
           'summary',
           { className: 'dsh-teams-run-head', 'data-has-stop': canStop ? 'true' : undefined },
-          // 立绘牌：全身人物站在牌底（不裁头）
+          // 列①：立绘牌，全身人物站在牌底（不裁头）
           h('span', { className: 'dsh-teams-run-avatar' }, h(GirlArt, { accent, size: 34 })),
+          // 列②上行：标题（单行省略，不挤压③）；下行：元信息小字
           h('span', { className: 'dsh-teams-run-subject', title: subject }, subject),
           h(
             'span',
             { className: 'dsh-teams-run-meta' },
+            h('span', null, pathLabel),
+            h('span', null, t(`phase.${phase}`)),
+            timeText === '' ? null : h('span', null, timeText),
+          ),
+          // 列③：状态胶囊 + 完成数，整体靠右
+          h(
+            'span',
+            { className: 'dsh-teams-run-stats' },
             run.current === true
               ? h('span', { className: 'dsh-teams-chip', 'data-state': 'running' }, t('flow.current'))
               : null,
-            h('span', null, meta),
+            h('span', { className: 'dsh-teams-run-count' }, total > 0 ? `${done}/${total}` : '—'),
           ),
           canStop
             ? h(
@@ -2251,12 +2389,26 @@ window.__ModuleLoader__.load({
               )
             : null,
           h('span', { className: 'dsh-teams-run-chevron', 'aria-hidden': 'true' }, '⌄'),
-          // 进度条贴折叠行底边：折叠时也能看完成度
+          // 分段进度贴折叠行底边：一段一个任务，折叠时也能看出走到第几段
           total > 0
             ? h(
                 'span',
-                { className: 'dsh-teams-run-bar', role: 'progressbar', 'aria-valuenow': String(done), 'aria-valuemin': '0', 'aria-valuemax': String(total) },
-                h('i', { style: { width: `${Math.round((done / total) * 100)}%` } }),
+                {
+                  className: 'dsh-teams-run-bar',
+                  role: 'progressbar',
+                  'aria-valuenow': String(done),
+                  'aria-valuemin': '0',
+                  'aria-valuemax': String(total),
+                  'aria-valuetext': `${t('field.progress')} ${done}/${total}`,
+                },
+                ...segments.map((segment) =>
+                  h('i', {
+                    key: segment.id,
+                    className: 'dsh-teams-run-seg',
+                    'data-status': segmentTone(segment.status),
+                    title: `${segment.label} ${t(`task.${segment.status}`)}`,
+                  }),
+                ),
               )
             : null,
         ),
@@ -2395,7 +2547,7 @@ window.__ModuleLoader__.load({
       const tabs = [
         // 流程优先：按"每次任务"折叠，展开就是那一轮的路径概述与左→右流程图
         ['runs', t('flow.tab')],
-        ['members', t('view.members')],
+        // 成员列表已移除：角色数据仍在卡片上（头像/名称/用量），不再单开一页
         ['tasks', t('view.tasks')],
         ['log', t('view.log')],
       ];
@@ -2445,8 +2597,6 @@ window.__ModuleLoader__.load({
           onStop: () => requestTeamStop(team.captainSessionId),
           onRefresh: () => store.refresh(),
         });
-      } else if (tab === 'members') {
-        body = h(MembersView, { team, t, openSession, canOpenSession });
       } else if (tab === 'tasks') {
         body = h(TasksView, { team, t, openSession, canOpenSession });
       } else {
@@ -2865,115 +3015,6 @@ window.__ModuleLoader__.load({
     function formatTime(value) {
       if (typeof value !== 'string' || value === '') return '';
       return value.replace('T', ' ').slice(11, 19);
-    }
-
-    function MembersView({ team, t, openSession, canOpenSession }) {
-      const nodes = [];
-      const stats = team.stats ?? {};
-
-      // 概览：路径、阶段、进度
-      nodes.push(
-        h(
-          'div',
-          { className: 'dsh-teams-card', key: 'summary' },
-          h(
-            'dl',
-            { className: 'dsh-teams-kv' },
-            h('dt', null, t('field.path')),
-            h('dd', null, `${team.pathLabel ?? '-'}（${team.path ?? '-'}）`),
-            h('dt', null, t('field.phase')),
-            h('dd', null, t(`phase.${team.phase ?? 'idle'}`)),
-            team.score === undefined
-              ? null
-              : h('dt', null, t('field.score')),
-            team.score === undefined
-              ? null
-              : h(
-                  'dd',
-                  null,
-                  `规模 ${team.score.scale} + 影响 ${team.score.impact} + 风险 ${team.score.risk} = ${team.total}`,
-                ),
-            stats.total > 0 ? h('dt', null, t('field.progress')) : null,
-            stats.total > 0
-              ? h('dd', null, `${stats.done ?? 0}/${stats.total}${stats.failed ? `　失败 ${stats.failed}` : ''}`)
-              : null,
-          ),
-          stats.total > 0
-            ? h(
-                'div',
-                { className: 'dsh-teams-progress', role: 'progressbar', 'aria-valuenow': String(stats.done ?? 0), 'aria-valuemin': '0', 'aria-valuemax': String(stats.total) },
-                h('i', { style: { width: `${Math.round(((stats.done ?? 0) / stats.total) * 100)}%` } }),
-              )
-            : null,
-        ),
-      );
-
-      const members = Array.isArray(team.members) ? team.members : [];
-      if (members.length === 0) {
-        nodes.push(h('div', { className: 'dsh-teams-muted', key: 'none' }, t('view.noMembers')));
-      } else {
-        for (const member of members) {
-          const sessionId = member.sessionId;
-          const hasSession = typeof sessionId === 'string' && sessionId !== '';
-          // 有子会话 + 宿主提供 uiWorkspace 才可点；能力缺失时禁用并给 title（点击不抛错）
-          const clickable = hasSession && canOpenSession === true;
-          const unavailable = hasSession && canOpenSession !== true;
-          const openMember = () => {
-            if (clickable) openSession(sessionId);
-          };
-          nodes.push(
-            h(
-              'div',
-              {
-                className: 'dsh-teams-card dsh-teams-member',
-                key: member.role ?? member.name,
-                'data-clickable': clickable ? 'true' : undefined,
-                'data-disabled': unavailable ? 'true' : undefined,
-                role: clickable ? 'button' : undefined,
-                tabIndex: clickable ? 0 : undefined,
-                'aria-label': clickable
-                  ? `${member.roleName ?? member.name}，${t('member.openSession')}`
-                  : undefined,
-                'aria-disabled': unavailable ? 'true' : undefined,
-                title: clickable
-                  ? t('member.openSession')
-                  : hasSession
-                    ? t('session.unavailable')
-                    : t('session.none'),
-                onClick: clickable ? openMember : undefined,
-                onKeyDown: clickable
-                  ? (event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        openMember();
-                      }
-                    }
-                  : undefined,
-              },
-              h(
-                'div',
-                { className: 'dsh-teams-member-main' },
-                h('span', { className: 'dsh-teams-avatar', 'aria-hidden': 'true' }, member.emoji ?? '🧩'),
-                h(
-                  'span',
-                  { className: 'dsh-teams-member-text' },
-                  h('strong', null, member.roleName ?? member.name),
-                  member.currentTask
-                    ? h('span', { className: 'dsh-teams-muted' }, `${t('member.onTask')} ${member.currentTask}`)
-                    : null,
-                ),
-                h(
-                  'span',
-                  { className: 'dsh-teams-chip', 'data-state': String(member.status ?? 'idle') },
-                  member.status === 'working' ? t('member.working') : t('member.idle'),
-                ),
-                hasSession ? h('span', { className: 'dsh-teams-open', 'aria-hidden': 'true' }, '›') : null,
-              ),
-            ),
-          );
-        }
-      }
-      return h('div', null, ...nodes);
     }
 
     /** 看门狗徽标：这一步是正常跑完的、被回收救回来的，还是被取消的。 */

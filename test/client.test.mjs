@@ -646,15 +646,18 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /team\.runs/, '运行列表要读快照的 runs');
   assert.match(source, /defaultOpen: index === 0/, '最新一轮默认展开');
 
-  // 流程图：像素坐标分层 + 单层 SVG 曲线（C 贝塞尔 + 箭头），不是 CSS 伪元素
+  // 流程图：像素坐标分层 + 单层 SVG 直角折线（M/L/A + 箭头 + 状态色），不是 CSS 伪元素
   assert.match(source, /function layersOf\(/, '应按依赖算层级');
   assert.match(source, /function flowNodes\(/, '应由纯函数算出节点像素坐标');
   assert.match(source, /function flowEdges\(/, '应只画合法依赖边');
-  assert.match(source, /function flowEdgePath\(/, '应有曲线路径函数');
-  assert.match(source, /C\$\{x1 \+ bend\}/, '连线是横向 C 贝塞尔');
-  assert.match(source, /markerEnd: `url\(#\$\{/, '曲线要有箭头（marker-end）');
+  assert.match(source, /function flowEdgePath\(/, '应有折线路径函数');
+  assert.match(source, /function flowEdgeStatus\(/, '边要按目标状态着色');
+  assert.match(source, /function flowEdgeChannels\(/, '并行分支要各占一条通道');
+  assert.ok(!/C\$\{x1 \+ bend\}/.test(source), '不再用横向 C 贝塞尔');
+  assert.match(source, /L\$\{midX - r\} \$\{y1\} A\$\{r\} \$\{r\} 0 0 \$\{sweep1\}/, '折线只有 M/L/A（直角 + 2px 圆角）');
+  assert.match(source, /markerEnd: `url\(#\$\{/, '折线要有箭头（marker-end）');
   assert.match(source, /h\(\s*'marker',/, '箭头用 SVG marker 定义');
-  assert.match(source, /dsh-teams-flow-edges/, '曲线层是独立 SVG');
+  assert.match(source, /dsh-teams-flow-edges/, '边层是独立 SVG');
   assert.match(source, /function flowChain\(/, '悬停要算完整上下游链');
   assert.match(source, /function flowDetail\(/, '钉住要能算负责人/未满足前置/下游解锁');
   assert.match(source, /function flowModeFor\(/, '窄宽度要能切换排布');
@@ -672,13 +675,18 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /formatTokens/, 'token 数要格式化（1.2k 这种）');
   assert.match(source, /openSession\(step\.childId\)/, '详情面板承接打开子会话');
 
-  // 状态边框：进行中黄色流光（旋转的锥形渐变）、完成绿、失败红
-  assert.match(source, /dsh-teams-flow-glow/, '应有流光层');
-  assert.match(source, /conic-gradient/, '流光用锥形渐变');
-  assert.match(source, /@keyframes dsh-teams-flow-spin/, '流光要转起来');
+  // 状态边框：进行中黄色流光（SVG 环带，不再是 conic-gradient 方块）、完成绿、失败红
+  assert.match(source, /dsh-teams-flow-ring/, '应有流光环带');
+  assert.ok(!/conic-gradient/.test(source), '流光不再用锥形渐变方块');
+  assert.ok(!/@keyframes dsh-teams-flow-spin/.test(source), '不再旋转整个环');
+  assert.match(source, /@keyframes dsh-teams-flow-ring/, '环带沿边框绕一周');
+  assert.match(source, /@keyframes dsh-teams-flow-travel/, '连线流光要有去程/回程');
+  assert.match(source, /dsh-teams-flow-edge-pulse/, '指向进行中的边要有流光带');
+  assert.match(source, /pathLength: '100'/, '流光用 pathLength 归一化（与卡片尺寸解耦）');
+  assert.match(source, /const FLOW_RING_PATH =/, '环带路径是常量（左中起笔，与入边落点衔接）');
   // 进行中：琥珀边框打底 + 流光环叠加（之前用 border-color:transparent，流光转到背面时半边没边）
   assert.match(source, /data-status="running"\],[\s\S]{0,300}40%,var\(--dsw-alias-border-l1\)/, '进行中要有琥珀边框打底');
-  assert.match(source, /data-status="running"\] \.dsh-teams-flow-glow/, '进行中要有流光环');
+  assert.match(source, /data-status="running"\] \.dsh-teams-flow-ring/, '进行中要有流光环');
   // 完成/失败用状态色画边框（完成允许与 border-l2 混合出更柔的绿）
   assert.match(source, /data-status="done"\]\{[\s\S]{0,120}state-success-primary/, '完成=绿边框');
   assert.match(source, /data-status="failed"\]\{[\s\S]{0,120}state-error-primary/, '失败=红边框');
@@ -731,7 +739,7 @@ test('流程视图：按每次任务折叠 + 左→右流程图 + 方形身份�
   assert.match(source, /flow\.more/, '更早的轮次要能按需展开');
 });
 
-test('成员卡片可点进子代理会话，且子会话里有返回队长的入口', async () => {
+test('子代理会话入口：任务卡与流程详情可点；成员列表已移除但角色数据仍在用', async () => {
   const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
 
   // 打开会话走宿主服务 uiWorkspace.openSession(target)（SessionTarget = SessionId | SubagentAddress）。
@@ -740,11 +748,11 @@ test('成员卡片可点进子代理会话，且子会话里有返回队长的�
   assert.match(source, /ctx\.get\('uiWorkspace'\)/, '应经宿主 uiWorkspace 打开会话（软依赖取值）');
   assert.match(source, /uiWorkspace\.openSession\(sessionId\)/, '应调用 openSession');
 
-  // 成员卡：整卡可点 + 键盘可达（Enter/Space），并把子会话 id 传出去
-  assert.match(source, /dsh-teams-member/, '成员卡应有专门的样式类');
-  assert.match(source, /member\.sessionId/, '成员卡要用成员的子会话 id');
-  assert.match(source, /onClick: clickable \? openMember : undefined/, '可点时才挂 onClick');
-  assert.match(source, /event\.key === 'Enter' \|\| event\.key === ' '/, '键盘也要能进（可达性）');
+  // 成员列表视图删除：面板不再有成员页，但快照 members 仍供「忙碌成员数」与卡片使用
+  assert.ok(!/function MembersView\(/.test(source), '成员列表视图已删除');
+  assert.ok(!/\['members', t\('view\.members'\)\]/.test(source), '面板不再有成员页签');
+  assert.match(source, /Array\.isArray\(team\.members\)/, '忙碌成员数仍来自快照');
+  assert.match(source, /member\.status === 'working'/, '忙碌判定不变');
 
   // 子会话横幅：识别 viewingAsChild 并给一条回队长的路
   // 真实缺陷：点进子代理后团队面板空白，只能返回主会话才看得到。
@@ -1528,29 +1536,20 @@ function renderCard(flowBox, stepId) {
   return renderDirect(node);
 }
 
-test('面板：成员行与任务标题行可打开子会话（键盘也可），流程图卡片同样可点', async () => {
+test('面板：任务标题行可打开子会话（键盘也可），流程图卡片同样可点', async () => {
   const opened = [];
   const { React, workspace } = await mountTeamWorkspace({
     uiWorkspace: { openSession: (id) => opened.push(id) },
   });
 
-  // ① 成员行：整行 role=button + tabIndex，点击 / Enter 都打开该成员的子会话
-  selectTab(workspace, 'view.members');
-  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
-  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
-  assert.ok(memberRow, '应渲染成员行');
-  assert.equal(memberRow.props.role, 'button', '可点成员行要有 button 语义');
-  assert.equal(memberRow.props.tabIndex, 0, '键盘可聚焦');
-  assert.equal(memberRow.props['aria-label'], '开发执行者，member.openSession');
-  assert.equal(memberRow.props.title, 'member.openSession');
-  memberRow.props.onClick();
-  assert.deepEqual(opened, ['child-a'], '点成员行应打开 member.sessionId');
-  const enter = { key: 'Enter', preventDefault() { this.defaultPrevented = true; } };
-  memberRow.props.onKeyDown(enter);
-  assert.equal(enter.defaultPrevented, true, 'Enter 要拦掉默认行为');
-  assert.deepEqual(opened, ['child-a', 'child-a'], 'Enter 也能打开');
+  // ⓪ 成员页签已删除：只剩流程 / 任务 / 事件
+  const tabLabels = collect(
+    workspace.tree,
+    (node) => node.type === 'button' && node.props?.className === 'dsh-teams-tab',
+  ).map((node) => (node.children ?? [])[0]);
+  assert.deepEqual(tabLabels, ['flow.tab', 'view.tasks', 'view.log'], '成员列表页签应已移除');
 
-  // ② 任务卡：标题行可点（下半部分 details 仍是独立交互），点击打开 task.childId
+  // ① 任务卡：标题行可点（下半部分 details 仍是独立交互），点击打开 task.childId
   selectTab(workspace, 'view.tasks');
   const tasksTree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
   const taskHead = collect(tasksTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-task-head'))[0];
@@ -1559,6 +1558,10 @@ test('面板：成员行与任务标题行可打开子会话（键盘也可）�
   assert.equal(taskHead.props.title, 'task.openSession');
   taskHead.props.onClick();
   assert.equal(opened.at(-1), 'child-b', '点任务标题行应打开 task.childId');
+  const enter = { key: 'Enter', preventDefault() { this.defaultPrevented = true; } };
+  taskHead.props.onKeyDown(enter);
+  assert.equal(enter.defaultPrevented, true, 'Enter 要拦掉默认行为');
+  assert.deepEqual(opened, ['child-b', 'child-b'], 'Enter 也能打开');
   const space = { key: ' ', preventDefault() { this.defaultPrevented = true; } };
   taskHead.props.onKeyDown(space);
   assert.equal(space.defaultPrevented, true, 'Space 要拦掉滚动/折叠');
@@ -1575,8 +1578,8 @@ test('面板：成员行与任务标题行可打开子会话（键盘也可）�
   cardTree.props.onClick();
   assert.deepEqual(
     opened,
-    ['child-a', 'child-a', 'child-b', 'child-b'],
-    '点卡片本身不再打开会话（任务标题行的点击和 Space 各开一次）',
+    ['child-b', 'child-b', 'child-b'],
+    '点卡片本身不再打开会话（任务标题行的点击与 Enter/Space 各开一次）',
   );
   const detail = renderDirect(componentNamed(flowBox.tree, 'FlowDetail'));
   const openButton = collect(
@@ -1588,17 +1591,8 @@ test('面板：成员行与任务标题行可打开子会话（键盘也可）�
   assert.equal(opened.at(-1), 'child-flow', '详情里的按钮打开该步骤子会话');
 });
 
-test('面板降级：取不到 uiWorkspace 时成员行/任务行/流程卡禁用并给 title，点击不抛错', async () => {
+test('面板降级：取不到 uiWorkspace 时任务行/流程卡禁用并给 title，点击不抛错', async () => {
   const { React, workspace } = await mountTeamWorkspace();
-
-  selectTab(workspace, 'view.members');
-  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
-  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
-  assert.equal(memberRow.props.role, undefined, '没有服务就不该有 button 语义');
-  assert.equal(memberRow.props.onClick, undefined, '没有服务就不挂点击处理');
-  assert.equal(memberRow.props['aria-disabled'], 'true');
-  assert.equal(memberRow.props.title, 'session.unavailable', '要说明为什么点不了');
-  assert.doesNotThrow(() => memberRow.props.onClick?.());
 
   selectTab(workspace, 'view.tasks');
   const tasksTree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
@@ -1653,6 +1647,98 @@ test('停止入口只在正在跑的当前轮出现（历史轮与已收口轮�
       false,
     );
   }
+});
+
+test('折叠行：三列层级（立绘｜标题+元信息｜状态与进度），长标题单行省略', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-run-head\{[^}]*grid-template-columns:34px minmax\(0,1fr\) auto 12px/, '三列网格');
+  assert.match(
+    source,
+    /\.dsh-teams-run-subject\{[^}]*grid-column:2;grid-row:1;[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/,
+    '标题在②行1，单行省略（不挤压其它元素）',
+  );
+  assert.match(source, /\.dsh-teams-run-meta\{[^}]*grid-column:2;grid-row:2;/, '元信息小字在②行2');
+  assert.match(source, /\.dsh-teams-run-stats\{[^}]*grid-column:3;/, '状态与进度在③列靠右');
+  assert.match(
+    source,
+    /\.dsh-teams-run-head\[data-has-stop="true"\]\{[^}]*grid-template-columns:34px minmax\(0,1fr\) auto auto 12px/,
+    '有停止按钮时多一列，其余轮次零位移',
+  );
+
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox);
+  const head = collect(runBox.tree, (node) => node.type === 'summary')[0];
+  const classes = (head.children ?? []).map((child) => child?.props?.className ?? '').filter((name) => name !== '');
+  assert.deepEqual(
+    classes,
+    [
+      'dsh-teams-run-avatar',
+      'dsh-teams-run-subject',
+      'dsh-teams-run-meta',
+      'dsh-teams-run-stats',
+      'dsh-teams-btn dsh-teams-run-stop',
+      'dsh-teams-run-chevron',
+      'dsh-teams-run-bar',
+    ],
+    '折叠行顺序：立绘 → 标题 → 元信息 → 状态/进度 → 停止 → 箭头 → 分段进度',
+  );
+  const subject = (head.children ?? []).find((child) => child?.props?.className === 'dsh-teams-run-subject');
+  assert.equal(subject.children[0], '补两个功能');
+  assert.equal(subject.props.title, '补两个功能', '长标题用 title 兜底（悬停可看全）');
+  const meta = (head.children ?? []).find((child) => child?.props?.className === 'dsh-teams-run-meta');
+  assert.deepEqual(
+    (meta.children ?? []).map((child) => child?.children?.[0]).filter((value) => value !== undefined),
+    ['标准', 'phase.running'],
+    '元信息行：路径 + 阶段',
+  );
+  const stats = (head.children ?? []).find((child) => child?.props?.className === 'dsh-teams-run-stats');
+  const count = (stats.children ?? []).find((child) => child?.props?.className === 'dsh-teams-run-count');
+  assert.equal(count.children[0], '0/2', '完成数在③列');
+});
+
+test('折叠行进度：一段一个任务（拓扑序），绿/黄/红/灰随状态，段数随任务数增减', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /function runSegments\(steps\)/, '应有纯函数切段（按拓扑层序）');
+  assert.match(source, /function segmentTone\(status\)/, '应有状态归色函数');
+  for (const tone of ['done', 'running', 'failed', 'pending']) {
+    assert.match(source, new RegExp(`\\.dsh-teams-run-seg\\[data-status="${tone}"\\]`), `线段有 ${tone} 配色`);
+  }
+
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const run = {
+    runId: 'run-seg',
+    current: false,
+    phase: 'running',
+    pathLabel: '完整',
+    subject: '四步',
+    steps: [
+      { id: 's1', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
+      { id: 's2', role: 'executor', roleName: '开发执行者', status: 'failed', deps: ['s1'] },
+      { id: 's3', role: 'critic', roleName: '批判者', status: 'running', deps: ['s2'] },
+      { id: 's4', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['s3'] },
+    ],
+  };
+  const runBox = mountRunItem(React, runsBox, run);
+  const bar = collect(runBox.tree, (node) => node.props?.className === 'dsh-teams-run-bar')[0];
+  assert.ok(bar, '折叠行底边是分段进度');
+  assert.equal(bar.props.role, 'progressbar');
+  assert.equal(bar.props['aria-valuemax'], '4');
+  assert.equal(bar.props['aria-valuetext'], 'field.progress 1/4', '读屏用文字兜底');
+  const segs = (bar.children ?? []).filter((child) => child?.props?.className === 'dsh-teams-run-seg');
+  assert.equal(segs.length, 4, '一段一个任务');
+  assert.deepEqual(
+    segs.map((seg) => seg.props['data-status']),
+    ['done', 'failed', 'running', 'pending'],
+    '顺序=拓扑层序，颜色=完成绿/失败红/进行中黄/未开始灰',
+  );
+  assert.equal(segs[0].props.title, '需求分析师 task.done', '每段可悬停看任务名与状态');
+
+  // 中途插入任务：段数自动跟着任务数走（2 段 → 4 段）
+  const two = mountRunItem(React, runsBox);
+  const twoBar = collect(two.tree, (node) => node.props?.className === 'dsh-teams-run-bar')[0];
+  assert.equal(twoBar.children.length, 2, '任务数变化时段数自动增减');
 });
 
 test('停止：按钮在运行行标题旁，确认框显示未完成任务与忙碌成员；取消不改状态，确认后才请求', async () => {
@@ -1750,7 +1836,7 @@ test('停止：按钮在运行行标题旁，确认框显示未完成任务与�
   assert.equal(netError.children[0], 'stop.failed');
 });
 
-test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图卡片键盘可达', async () => {
+test('面板：宿主 openSession 抛错时任务行点击不抛；流程图卡片键盘可达', async () => {
   // 能力探测只看「有没有这个方法」，所以宿主实现自己抛错是可能的：点击路径必须兜住
   const { React, workspace } = await mountTeamWorkspace({
     uiWorkspace: {
@@ -1760,11 +1846,11 @@ test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图�
     },
   });
 
-  selectTab(workspace, 'view.members');
-  const membersTree = renderDirect(componentNamed(workspace.tree, 'MembersView'));
-  const memberRow = collect(membersTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-member'))[0];
-  assert.equal(memberRow.props.role, 'button', '服务在就要可点');
-  assert.doesNotThrow(() => memberRow.props.onClick(), '宿主抛错不能冒到 React（否则面板白屏）');
+  selectTab(workspace, 'view.tasks');
+  const tasksTree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
+  const taskHead = collect(tasksTree, (node) => String(node.props?.className ?? '').includes('dsh-teams-task-head'))[0];
+  assert.equal(taskHead.props.role, 'button', '服务在就要可点');
+  assert.doesNotThrow(() => taskHead.props.onClick(), '宿主抛错不能冒到 React（否则面板白屏）');
   const space = {
     key: ' ',
     prevented: false,
@@ -1772,7 +1858,7 @@ test('面板：宿主 openSession 抛错时点击与键盘都不抛；流程图�
       this.prevented = true;
     },
   };
-  assert.doesNotThrow(() => memberRow.props.onKeyDown(space), 'Space 也不得抛错');
+  assert.doesNotThrow(() => taskHead.props.onKeyDown(space), 'Space 也不得抛错');
   assert.equal(space.prevented, true, 'Space 要拦掉页面滚动');
 
   selectTab(workspace, 'flow.tab');
@@ -1899,16 +1985,23 @@ test('依赖图：真 SVG 贝塞尔连接 9 节点，分层坐标不重叠也不
   assert.equal(Math.max(...rects.map((rect) => rect.top)) + 180, 560, '最下卡片不越界');
 
   const svg = flowSvg(flowBox);
-  assert.ok(svg, '曲线层必须是真 SVG');
-  assert.equal(svg.props['aria-hidden'], 'true', '曲线是装饰层，不抢读屏');
+  assert.ok(svg, '边层必须是真 SVG');
+  assert.equal(svg.props['aria-hidden'], 'true', '边是装饰层，不抢读屏');
   const paths = edgePaths(flowBox);
   assert.equal(paths.length, 12, '12 条依赖边（去重、未知/自依赖不画）');
   for (const path of paths) {
-    assert.match(path.props.d, /^M\d+ \d+ C\d+ \d+ \d+ \d+ \d+ \d+$/, '每条边是横向 C 贝塞尔');
+    assert.ok(!/[CQS]/.test(path.props.d), `折线不得含贝塞尔/曲线命令：${path.props.d}`);
+    assert.match(path.props.d, /^M\d+ \d+ /, '从源卡右中点起笔');
     assert.match(path.props.markerEnd, /^url\(#dsh-teams-flow-run-dag-arrow/, '每条边带箭头');
+    assert.match(
+      path.props.markerEnd,
+      new RegExp(`-arrow-${path.props['data-status']}\\)$`),
+      '箭头颜色跟随边状态',
+    );
+    assert.match(path.props['data-status'], /^(done|failed|running|pending)$/, '每条边有状态');
   }
   const markers = collect(svg, (node) => node.type === 'marker');
-  assert.equal(markers.length, 2, '普通/高亮两份箭头定义');
+  assert.equal(markers.length, 4, '绿/红/黄/灰四种箭头定义');
 
   const card = cardOf(flowBox, 'a');
   assert.equal(card.props.role, 'button');
@@ -1941,7 +2034,11 @@ test('依赖图：悬停高亮完整上下游链（上溯到根、下溯到叶�
   assert.equal(paths.filter((path) => path.props['data-active'] === 'true').length, 8, '链上的 8 条边高亮');
   assert.equal(paths.filter((path) => path.props['data-dim'] === 'true').length, 4, '其余 4 条边淡化');
   for (const path of paths.filter((item) => item.props['data-active'] === 'true')) {
-    assert.match(path.props.markerEnd, /-arrow-on/, '高亮边用高亮箭头');
+    assert.match(
+      path.props.markerEnd,
+      /-arrow-(done|failed|running|pending)\)$/,
+      '高亮只加粗提亮，箭头仍用状态色（不覆盖"走到哪一步"的信息）',
+    );
   }
 
   cardE.props.onHover(undefined);
@@ -2340,30 +2437,111 @@ test('依赖图：拓扑分层严格——每条依赖都在更早列，层号=�
   }
 });
 
-test('依赖图：12 条曲线都锚在源卡右中点与目标卡左中点，控制点只向右推进', async () => {
+test('依赖图：12 条边是直角折线，锚在源卡右中点与目标卡左中点，并行分支各占通道', async () => {
   const { flowBox } = await mountDag();
   const rects = nodeRects(flowBox);
   const paths = edgePaths(flowBox);
   assert.equal(paths.length, 12);
   const pairs = new Set();
+  const verticals = new Map();
   for (const path of paths) {
-    const match = /^M(\d+) (\d+) C(\d+) (\d+) (\d+) (\d+) (\d+) (\d+)$/.exec(path.props.d);
-    assert.ok(match, `曲线必须是一次 C 贝塞尔：${path.props.d}`);
-    const [x1, y1, cx1, cy1, cx2, cy2, x2, y2] = match.slice(1).map(Number);
+    const d = path.props.d;
+    assert.ok(!/[CQS]/.test(d), `折线不得含贝塞尔/曲线命令：${d}`);
+    const pts = [...d.matchAll(/[ML](-?\d+) (-?\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    const arcs = [...d.matchAll(/A2 2 0 0 [01] (-?\d+) (-?\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    assert.ok(/^M-?\d+ -?\d+/.test(d), `路径以 M 起笔：${d}`);
+    const [x1, y1] = pts[0];
+    const [x2, y2] = pts.at(-1);
     const from = rects.find((rect) => rect.left + 116 === x1 && rect.top + 90 === y1);
     const to = rects.find((rect) => rect.left - 2 === x2 && rect.top + 90 === y2);
     assert.ok(from, `起点应是某张卡的右中点：${x1},${y1}`);
     assert.ok(to, `终点应是目标卡左中点偏 2px（给箭头留位）：${x2},${y2}`);
     assert.ok(to.left > from.left, `${from.id} → ${to.id} 必须从左向右`);
-    assert.ok(cx1 > x1 && cx2 < x2, '控制点沿水平方向外推，才是横向 C 曲线');
-    assert.equal(cy1, y1, '起点切线水平');
-    assert.equal(cy2, y2, '终点切线水平');
-    assert.equal(cx1 - x1, x2 - cx2, '两侧弯折量对称');
-    assert.ok(cx1 - x1 >= 10 && cx1 - x1 <= 28, '弯折量在通道内，不穿卡片');
+    assert.equal(x2 - x1, 54, '列间距 56 减去箭头留位 2px');
+    if (y1 !== y2) {
+      assert.equal(arcs.length, 2, `跨排要两个 2px 圆角：${d}`);
+      const midX = arcs[0][0];
+      assert.equal(arcs[1][0] - midX, 2, '两段圆弧对称落在竖线两侧');
+      assert.ok(midX > x1 && midX < x2, '竖线走在列间通道，不压卡片');
+      assert.ok(Math.abs(midX - (x1 + x2) / 2) <= 9, '通道偏移在半列之内（并行边错开 ±9px）');
+      if (!verticals.has(x1)) verticals.set(x1, []);
+      verticals.get(x1).push(midX);
+    } else {
+      assert.equal(arcs.length, 0, '同排直接一条水平线，不需要拐点');
+      assert.equal(pts.length, 2, '同排只有起点与终点');
+    }
     const pair = `${from.id}->${to.id}`;
     assert.ok(!pairs.has(pair), `依赖边不得重复：${pair}`);
     pairs.add(pair);
   }
+  // 并行分支：同一列对的竖线必须错开（否则几条边叠成一根）
+  assert.ok(verticals.size > 0, '跨排的边应有竖线段');
+  for (const [x1, list] of verticals) {
+    assert.equal(new Set(list).size, list.length, `列 ${x1} 的并行竖线必须各占一条通道`);
+  }
+});
+
+test('依赖图：边按下游状态着色（绿=两侧完成、红=失败、黄=指向进行中、灰虚线=未到达）', async () => {
+  const { flowBox } = await mountDag();
+  const paths = edgePaths(flowBox);
+  const counts = { done: 0, failed: 0, running: 0, pending: 0 };
+  for (const path of paths) counts[path.props['data-status']] += 1;
+  // a/b/c/d 完成，e 进行中，f 受阻 → 未到达；g/h/i 未开始
+  assert.deepEqual(counts, { done: 3, failed: 0, running: 2, pending: 7 }, '边状态取下游：d/b/c 完成、e 进行中');
+
+  // 指向进行中任务的边才有流光带（e 的两条入边），且用 pathLength 归一化
+  const pulses = collect(
+    renderDirect(componentNamed(flowBox.tree, 'FlowEdges')),
+    (node) => node.props?.className === 'dsh-teams-flow-edge-pulse',
+  );
+  assert.equal(pulses.length, 2, '只有指向进行中任务的两条入边带流光');
+  for (const pulse of pulses) {
+    assert.equal(pulse.props.pathLength, '100', '流转用 100 单位归一化');
+    assert.match(pulse.props.d, /^M\d+ \d+/, '流光和边是同一条折线');
+  }
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="done"\]\{[^}]*state-success-primary/, '完成绿');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="failed"\]\{[^}]*state-error-primary/, '失败红');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="running"\]\{[^}]*state-warn-primary/, '指向进行中=黄');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="pending"\]\{[^}]*stroke-dasharray:5 4/, '未到达=灰虚线');
+});
+
+test('进行中卡片：SVG 环带沿边框绕一周，左中起笔与入边流光衔接；减少动效时静止', async () => {
+  const { flowBox } = await mountDag();
+  const running = renderCard(flowBox, 'e');
+  const ring = collect(running, (node) => node.props?.className === 'dsh-teams-flow-ring')[0];
+  assert.ok(ring, '进行中卡片应有环带层');
+  assert.equal(ring.type, 'svg');
+  assert.equal(ring.props.viewBox, '0 0 116 180', '环带坐标系与卡片固定尺寸一致');
+  assert.equal(ring.props.preserveAspectRatio, 'none', '窄卡片也能贴合边框');
+  const band = collect(ring, (node) => node.props?.className === 'dsh-teams-flow-ring-band')[0];
+  assert.ok(band, '环带是一条描边路径');
+  assert.equal(band.props.pathLength, '100');
+  assert.match(band.props.d, /^M1 90 /, '左中起笔（连线落点）');
+  assert.match(band.props.d, / L1 16 A15 15 0 0 1 16 1 /, '绕角走直角圆弧，不旋转整块');
+  assert.match(band.props.d, / Z$/, '闭合成一条完整环路');
+
+  // 非进行中：元素统一渲染，由 CSS 按 data-status 显隐（不靠 JS 分支）
+  const done = renderCard(flowBox, 'a');
+  assert.equal(collect(done, (node) => node.props?.className === 'dsh-teams-flow-ring').length, 1);
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-flow-card\[data-status="running"\] \.dsh-teams-flow-ring\{display:block;\}/, '只有进行中显示');
+  // 旧实现被不透明舞台挡住大半，只剩信息区一坨转动的黄块；环带必须压在舞台之上
+  assert.match(source, /\.dsh-teams-flow-ring\{[^}]*z-index:2;/, '环带压在舞台之上，不能只露一块');
+  assert.match(source, /@keyframes dsh-teams-flow-ring/, '环带绕卡一周');
+  assert.match(source, /@keyframes dsh-teams-flow-travel/, '连线去程/回程');
+  assert.match(
+    source,
+    /@media \(prefers-reduced-motion:reduce\)\{[\s\S]{0,400}\.dsh-teams-flow-edge-pulse\{display:none;\}/,
+    '减少动效：流光隐藏',
+  );
+  assert.match(
+    source,
+    /@media \(prefers-reduced-motion:reduce\)\{[\s\S]{0,400}\.dsh-teams-flow-ring-band\{animation:none;/,
+    '减少动效：环带静止',
+  );
 });
 
 test('依赖图：SVG 曲线画在节点之下，且不拦截指针事件', async () => {
@@ -2678,4 +2856,133 @@ test('停止请求：确认后真实 POST 到插件路由并携带队长会话�
     if (realFetch === undefined) delete globalThis.fetch;
     else globalThis.fetch = realFetch;
   }
+});
+
+/* ================================================================== *
+ * 视觉重构验收补测（测试工程师）：失败边渲染 / 流光相位 / 拓扑序分段
+ * ================================================================== */
+
+/** 取一段 @keyframes 的规则体；关键帧内部每条规则单行，第一个「换行 + 缩进 }」即块尾。 */
+function keyframeBlock(source, name) {
+  const match = new RegExp(`@keyframes ${name}\\{([\\s\\S]*?)\\n\\s*\\}`).exec(source);
+  assert.ok(match, `应有 @keyframes ${name}`);
+  return match[1];
+}
+
+test('依赖图：失败边渲染为红色、完成边绿色、未到达边灰色，且失败/未到达都没有流光', async () => {
+  const run = {
+    runId: 'run-edge-fail',
+    current: true,
+    subject: '失败边',
+    pathLabel: '标准',
+    phase: 'failed',
+    steps: [
+      { id: 'a', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
+      { id: 'b', role: 'executor', roleName: '开发执行者', status: 'failed', deps: ['a'] },
+      { id: 'c', role: 'critic', roleName: '批判者', status: 'pending', deps: ['b'] },
+      { id: 'd', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['c'] },
+      { id: 'e', role: 'code-reviewer', roleName: '代码审查员', status: 'done', deps: ['a'] },
+    ],
+  };
+  const { flowBox } = await mountDag(run);
+  const paths = edgePaths(flowBox);
+  assert.equal(paths.length, 4, 'a→b、a→e、b→c、c→d 四条边');
+  const statuses = paths.map((path) => path.props['data-status']).sort();
+  assert.deepEqual(statuses, ['done', 'failed', 'failed', 'pending'], '完成绿 1 / 失败红 2 / 未到达灰 1');
+  for (const path of paths) {
+    assert.match(
+      path.props.markerEnd,
+      new RegExp(`-arrow-${path.props['data-status']}\\)$`),
+      '箭头颜色必须与边状态一致',
+    );
+  }
+
+  const pulses = collect(
+    renderDirect(componentNamed(flowBox.tree, 'FlowEdges')),
+    (node) => node.props?.className === 'dsh-teams-flow-edge-pulse',
+  );
+  assert.equal(pulses.length, 0, '没有指向进行中的边就不该有流光');
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="pending"\]\{[^}]*stroke-dasharray:5 4/, '未到达=灰虚线');
+  assert.match(source, /\.dsh-teams-flow-edge\[data-status="failed"\]\{[^}]*state-error-primary/, '失败=红');
+});
+
+test('流光相位：光带去程→绕卡一周→原路回程，与环带同一时间轴衔接', async () => {
+  const { flowBox } = await mountDag();
+  const svg = renderDirect(componentNamed(flowBox.tree, 'FlowEdges'));
+  const pulses = collect(svg, (node) => node.props?.className === 'dsh-teams-flow-edge-pulse');
+  assert.equal(pulses.length, 2, '指向进行中 e 的两条入边各一条流光');
+  const edges = edgePaths(flowBox);
+  for (const pulse of pulses) {
+    assert.equal(pulse.props.pathLength, '100', '路径长度归一化到 100');
+    assert.ok(edges.some((edge) => edge.props.d === pulse.props.d), '流光必须与所属折线同路径（不另画一根线）');
+  }
+
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  const pulseCss =
+    /\.dsh-teams-flow-edge-pulse\{[^}]*stroke-dasharray:12 88;stroke-dashoffset:100;[^}]*animation:dsh-teams-flow-travel 3\.2s linear infinite;/.exec(
+      source,
+    );
+  assert.ok(pulseCss, '光带是 12% 长的 dash，由 dashoffset 推进（不是旋转方块）');
+  const ringCss =
+    /\.dsh-teams-flow-ring-band\{[^}]*stroke-dasharray:14 86;stroke-dashoffset:100;[^}]*animation:dsh-teams-flow-ring 3\.2s linear infinite;/.exec(
+      source,
+    );
+  assert.ok(ringCss, '环带是沿卡片边框的 14% 长描边 dash');
+
+  const travel = keyframeBlock(source, 'dsh-teams-flow-travel');
+  assert.match(travel, /0%\{stroke-dashoffset:100;\}/, '0% 停在上游卡右边');
+  assert.match(travel, /34%\{stroke-dashoffset:12;\}/, '34% 抵达进行中卡片左中点');
+  assert.match(travel, /66%\{stroke-dashoffset:12;\}/, '停在卡边等环带走完');
+  assert.match(travel, /94%,100%\{stroke-dashoffset:100;\}/, '94% 回到起点，100% 无跳变');
+
+  const ring = keyframeBlock(source, 'dsh-teams-flow-ring');
+  assert.match(ring, /0%,34%\{stroke-dashoffset:100;opacity:0;\}/, '0–34% 等光带到达，环带隐藏');
+  assert.match(ring, /35%\{stroke-dashoffset:99;opacity:1;\}/, '35% 从连线落点起笔');
+  assert.match(ring, /68%\{stroke-dashoffset:0;opacity:1;\}/, '68% 绕卡一周回到落点');
+  assert.match(ring, /70%,100%\{stroke-dashoffset:0;opacity:0;\}/, '之后隐藏');
+
+  const running = renderCard(flowBox, 'e');
+  const band = collect(running, (node) => node.props?.className === 'dsh-teams-flow-ring-band')[0];
+  assert.equal(band.props.vectorEffect, 'non-scaling-stroke', '窄卡拉伸时线宽不变，才是光带不是色块');
+});
+
+test('折叠行进度：steps 乱序也按依赖拓扑排段，插入任务自动加一段', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const run = {
+    runId: 'run-topo',
+    current: false,
+    phase: 'running',
+    pathLabel: '完整',
+    subject: '乱序步骤',
+    steps: [
+      { id: 's4', role: 'verifier', roleName: '验证员', status: 'pending', deps: ['s3'] },
+      { id: 's2', role: 'executor', roleName: '开发执行者', status: 'running', deps: ['s1'] },
+      { id: 's3', role: 'critic', roleName: '批判者', status: 'failed', deps: ['s2'] },
+      { id: 's1', role: 'analyst', roleName: '需求分析师', status: 'done', deps: [] },
+    ],
+  };
+  const runBox = mountRunItem(React, runsBox, run);
+  const bar = collect(runBox.tree, (node) => node.props?.className === 'dsh-teams-run-bar')[0];
+  const segs = (bar.children ?? []).filter((child) => child?.props?.className === 'dsh-teams-run-seg');
+  assert.deepEqual(
+    segs.map((seg) => seg.props.title),
+    ['需求分析师 task.done', '开发执行者 task.running', '批判者 task.failed', '验证员 task.pending'],
+    '乱序输入也必须按拓扑序：上游段在左',
+  );
+  assert.deepEqual(segs.map((seg) => seg.props['data-status']), ['done', 'running', 'failed', 'pending']);
+
+  const inserted = mountRunItem(React, runsBox, {
+    ...run,
+    steps: [
+      ...run.steps,
+      { id: 's5', role: 'security-reviewer', roleName: '安全审查员', status: 'pending', deps: ['s3'] },
+    ],
+  });
+  const insertedBar = collect(inserted.tree, (node) => node.props?.className === 'dsh-teams-run-bar')[0];
+  const insertedSegs = (insertedBar.children ?? []).filter((child) => child?.props?.className === 'dsh-teams-run-seg');
+  assert.equal(insertedSegs.length, 5, '插入一个任务，线段自动从 4 段变 5 段');
+  assert.equal(insertedBar.props['aria-valuemax'], '5', '读屏进度上限同步');
 });
