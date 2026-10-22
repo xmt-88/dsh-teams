@@ -2116,7 +2116,12 @@ test('依赖图：Tab 进每个节点、Enter 钉住，焦点态有可见描边'
   const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
   assert.match(source, /dsh-teams-flow-card\[data-clickable="true"\]:focus-visible\{outline:2px/,
     '焦点态要有描边，不能只靠颜色');
-  assert.match(source, /\.dsh-teams-flow-card-stack\{width:100%;/, '窄宽卡片整行、内容不压缩');
+  assert.match(source, /\.dsh-teams-flow-card-stack\{[^}]*width:min\(100%,220px\)/,
+    '窄宽恢复竖卡，宽度上限 220px');
+  assert.match(source, /\.dsh-teams-flow-card-stack\{[^}]*margin-left:28px/,
+    '竖卡左边缘落在左侧连线通道之后');
+  assert.doesNotMatch(source, /\.dsh-teams-flow-card-stack\{[^}]*flex-direction:row/,
+    '窄宽不再是全宽横条');
 });
 
 test('依赖图：360px 窄面板保留身份卡竖向堆叠，不再退化为纯列表', async () => {
@@ -2152,7 +2157,7 @@ test('依赖图：360px 窄面板保留身份卡竖向堆叠，不再退化为�
   const cardE = cards.find((node) => node.props.step.id === 'e');
   assert.equal(cardE.props.depsText, 'task.deps：架构师、UI 设计师', '依赖改为行内标注');
   const cardTree = renderDirect(cardE);
-  assert.equal(cardTree.props.className.includes('dsh-teams-flow-card-stack'), true, '窄宽用的是竖排卡片');
+  assert.equal(cardTree.props.className.includes('dsh-teams-flow-card-stack'), true, '窄宽用的是竖卡身份牌');
   const textOf = (name) => collect(cardTree, (node) => node.props?.className === name)[0];
   assert.equal(textOf('dsh-teams-flow-role').children[0], '测试工程师', '角色名');
   assert.equal(textOf('dsh-teams-flow-state').children[1], 'task.running', '状态胶囊');
@@ -2313,12 +2318,17 @@ test('窄宽流程图：纯函数把每条上游依赖排进左侧通道，多�
   );
 });
 
-test('折叠行样式：浅色卡底 + 圆角，标题 500、元信息次级色，行边界与线段进度贴底内缩', async () => {
+test('折叠行样式：独立卡底 + 圆角，标题 500、元信息次级色，行边界与线段进度贴底内缩', async () => {
   const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
   assert.match(
     source,
+    /\.dsh-teams-run-head\{[^}]*background:color-mix\(in srgb,var\(--dsw-alias-label-primary\) 4%,transparent\)/,
+    '折叠行用 label-primary 4% 独立着色，浅/深主题都能与面板底色区分',
+  );
+  assert.doesNotMatch(
+    source,
     /\.dsh-teams-run-head\{[^}]*background:var\(--dsw-alias-bg-layer-1\)/,
-    '折叠行铺浅色卡底（layer-1）',
+    '折叠行不直接复用面板容器 token（同色撞底）',
   );
   assert.match(source, /\.dsh-teams-run-head\{[^}]*border-radius:10px/, '折叠行有圆角');
   assert.match(
@@ -2340,7 +2350,7 @@ test('折叠行样式：浅色卡底 + 圆角，标题 500、元信息次级色�
   assert.match(
     source,
     /\.dsh-teams-run\{[^}]*background:transparent/,
-    '外层不再垫同色底，折叠行的 layer-1 卡底才看得出来',
+    '外层不再垫同色底，折叠行的独立卡底才看得出来',
   );
   assert.match(
     source,

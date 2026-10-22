@@ -642,16 +642,18 @@ window.__ModuleLoader__.load({
   background:transparent;overflow:hidden;}
 /* 折叠行：三列层级 —— 立绘 ｜（标题 + 元信息小字）｜ 状态与进度（靠右）。
    层级靠字号/字重/灰度：标题 13/500，元信息 11px 次级灰，数字等宽。
-   折叠行自带 layer-1 卡底 + 圆角，与外层的 1px 描边共同勾出每一行的边界。 */
+   折叠行自带独立卡底 + 圆角，与外层的 1px 描边共同勾出每一行的边界。
+   卡底用 label-primary 4% 与透明混合，不直接复用容器 token：面板本身也是 layer-1，
+   同色叠加看不出卡；这个着色落在任何底色上都能显出一档差，浅色/深色主题同理。 */
 .dsh-teams-run-head{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr) auto 12px;
   column-gap:10px;row-gap:2px;align-items:center;min-height:36px;padding:8px 10px 14px;
   cursor:pointer;list-style:none;font-size:13px;
-  background:var(--dsw-alias-bg-layer-1);border-radius:10px;}
+  background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent);border-radius:10px;}
 /* 展开时只圆上角，并用底部细线把标题行与内容区分开 */
 .dsh-teams-run[open] .dsh-teams-run-head{border-radius:10px 10px 0 0;
   box-shadow:inset 0 -1px 0 var(--dsw-alias-border-l1);}
 .dsh-teams-run-head::-webkit-details-marker{display:none;}
-.dsh-teams-run-head:hover{background:var(--dsw-alias-bg-layer-2);}
+.dsh-teams-run-head:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent);}
 .dsh-teams-run-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px;}
 /* 立绘牌：人物"站"在牌底，全身不裁头 */
 .dsh-teams-run-avatar{grid-column:1;grid-row:1 / span 2;align-self:center;width:34px;height:38px;border-radius:11px;
@@ -905,26 +907,14 @@ window.__ModuleLoader__.load({
   max-height:120px;overflow-y:auto;}
 .dsh-teams-flow[data-mode="stack"] .dsh-teams-flow-viewport{overflow:visible;}
 .dsh-teams-flow-stack{display:flex;flex-direction:column;gap:8px;width:100%;min-width:0;}
-/* 卡内信息与宽视图同源：立绘 + 角色名 + 状态胶囊 + 步数/token/缓存 + 依赖行。
-   左侧 28px 是连线通道（padding 让出，不压内容）；连线由 .dsh-teams-flow-stack-wire 画在通道里。 */
-.dsh-teams-flow-card-stack{width:100%;height:auto;min-height:92px;flex-direction:row;align-items:stretch;
-  border-radius:16px;text-align:left;padding-left:28px;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-stage{width:64px;height:auto;align-self:stretch;
-  align-items:center;border-bottom:0;border-right:1px solid var(--dsw-alias-border-l1);}
-.dsh-teams-flow-card-stack .dsh-teams-flow-inner{margin-bottom:0;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-info{display:grid;grid-template-columns:minmax(0,1fr) auto;
-  grid-template-rows:auto auto auto;gap:2px 8px;align-content:center;padding:8px 10px;flex:1;min-width:0;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-role{grid-column:1;grid-row:1;min-height:0;text-align:left;
-  font-size:12px;line-height:15px;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-state{grid-column:2;grid-row:1;align-self:start;
-  margin-top:0;flex:none;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-usage{grid-column:1/-1;grid-row:2;flex-direction:row;
-  flex-wrap:wrap;gap:2px 10px;font-size:10px;line-height:13px;padding-bottom:0;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-usage > span{display:inline-flex;gap:4px;align-items:baseline;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-deps{grid-column:1/-1;grid-row:3;min-width:0;font-size:10.5px;
-  line-height:14px;color:var(--dsw-alias-label-secondary);text-align:left;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.dsh-teams-flow-card-stack .dsh-teams-flow-badge{right:auto;left:32px;top:4px;}
+/* 窄宽复用宽视图的竖卡身份牌：立绘在上、信息在下，只改宽度与定位，内容不另写一套。
+   宽度上限 220px，左边缘靠 margin-left 落在 28px 连线通道右侧（水平接入线终点 x=28），
+   两者不重叠；max-width 兜住极窄面板，避免 28px 通道把卡片挤出容器。 */
+.dsh-teams-flow-card-stack{width:min(100%,220px);max-width:calc(100% - 28px);
+  height:auto;min-height:180px;margin-left:28px;text-align:center;}
+.dsh-teams-flow-card-stack .dsh-teams-flow-deps{min-width:0;font-size:10.5px;line-height:14px;
+  color:var(--dsw-alias-label-secondary);text-align:center;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word;}
 .dsh-teams-flow-card-stack[data-clickable="true"]:hover{transform:translateY(-2px);}
 .dsh-teams-flow-card-stack[data-clickable="true"]:active{transform:translateY(0);}
 /* 窄宽竖向流程图：卡片左侧 28px 通道里走折线。
@@ -1486,7 +1476,7 @@ window.__ModuleLoader__.load({
       'M1 90 L1 16 A15 15 0 0 1 16 1 L100 1 A15 15 0 0 1 115 16 L115 164 A15 15 0 0 1 100 179 L16 179 A15 15 0 0 1 1 164 Z';
     const FLOW_GAP_Y = 10; // 同层行距
     const FLOW_STACK_WIDTH = 640; // 窄于此宽度改用竖排卡片（依赖曲线会压字，卡片内容不降级）
-    const FLOW_STACK_RAIL = 28; // 竖排卡片左侧连线通道宽度（与 .dsh-teams-flow-card-stack 的 padding-left 一致）
+    const FLOW_STACK_RAIL = 28; // 竖排卡片左侧连线通道宽度（与 .dsh-teams-flow-card-stack 的 margin-left 一致）
 
     /** 依赖 → 层级（列号）；同层按前驱平均行号 → deps → id 稳定排序。环按 0 层。 */
     function layersOf(steps) {
