@@ -9,6 +9,7 @@
 ![Tests](https://img.shields.io/badge/tests-284%20passing-brightgreen)
 ![Roles](https://img.shields.io/badge/内置角色-16-blueviolet)
 ![Paths](https://img.shields.io/badge/路径-5-orange)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 一句话就能把复杂任务交给一支分工明确的团队：
 **需求分析 → 架构 → 实现 → 评审 ‖ 测试 → 验证**。
@@ -298,4 +299,4 @@ New-Item -ItemType Junction -Path ".\node_modules\@deepseek-ai\dsh-tools" `
 
 ## License
 
-尚未指定。使用、分发前请先与作者确认。
+[MIT](LICENSE) © 2026 a1030691530-stack
