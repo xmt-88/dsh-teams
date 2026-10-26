@@ -21,7 +21,7 @@ import { graphFingerprint, planTeam, approveTeam, startTeamRun } from '../lib/sc
 import { readTeam, readTasks, mutateTasks, userRolesDir, appendJsonl } from '../lib/state.js';
 import { readDisabledRoles, writeDisabledRoles, setRoleEnabled, validateToggle, CORE_ROLES } from '../lib/role-state.js';
 import { readEvents } from '../lib/state.js';
-import { buildRolesPayload, applyRoleAction } from '../lib/web-routes.js';
+import { buildRolesPayload, applyRoleAction, buildSnapshot } from '../lib/web-routes.js';
 
 /* ================================================================== *
  * 判定行解析
@@ -277,25 +277,32 @@ async function runFast(dir, reply, name = 's') {
   const started = await startTeamRun(base);
   for (let i = 0; i < 120; i += 1) {
     const team = await readTeam(join(dir, '.dsh-teams'), name);
-    if (team?.phase === 'done' || team?.phase === 'failed') return { fake, team, started };
+    if (team?.phase === 'done' || team?.phase === 'failed' || team?.phase === 'needing-decision') {
+      return { fake, team, started };
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   const team = await readTeam(join(dir, '.dsh-teams'), name);
   return { fake, team, started };
 }
 
-test('质量门：验证员写 FAIL → 团队失败（不再"跑完就算过"）', async () => {
+test('质量门：验证员判 FAIL 且驳回轮次用尽 → blocked + needsDecision（不是 failed）', async () => {
   await withDir(async (dir) => {
     // 只让 verification 门挂：review 必须通过，否则 verifier 根本轮不到派发
     const { team } = await runFast(dir, (label) =>
       label.includes('verifier') ? '证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL' : '证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
     );
-    assert.equal(team.phase, 'failed', '验证员判 FAIL，团队必须失败');
+    assert.equal(team.phase, 'needing-decision', '轮次耗尽不是真失败，应等人拍板');
     const graph = await readTasks(join(dir, '.dsh-teams'), 's');
     // 只看 verification 门：review 是通过的，不能拿它当断言对象
     const gate = graph.tasks.find((task) => task.kind === 'verification');
     assert.ok(gate, '应有 verification 任务');
-    assert.notEqual(gate.status, 'done', '判 FAIL 的门不应该是 done');
+    assert.equal(gate.status, 'blocked', '判 FAIL 且预算用尽的评审门应是 blocked');
+    assert.notEqual(gate.status, 'failed', '不能记成真失败');
+    assert.equal(gate.needsDecision?.kind, 'review-budget', '需带 needsDecision 标记');
+    assert.equal(gate.needsDecision?.round, 3, '记下用尽时的轮次');
+    assert.ok(Array.isArray(gate.needsDecision?.findings), 'findings 必须带出来');
+    assert.ok(gate.failure, '仍要有一条可读的失败摘要');
   });
 });
 
@@ -448,16 +455,36 @@ test('质量门：判 FAIL 会退回实现步骤重做，超过 maxReviewRounds 
   });
 });
 
-test('质量门：驳回预算用尽后仍判 FAIL，团队失败', async () => {
+test('质量门：驳回预算用尽后转为待决策，findings 带出来、团队阶段是 needing-decision', async () => {
   await withDir(async (dir) => {
     const { team } = await runFast(
       dir,
       (label) =>
         label.includes('code-reviewer')
-          ? '一直有问题。证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+          ? 'HIGH lib/app.js:12 路径穿越。证据 lib/app.js:12 退出码 0\n\nVERDICT: FAIL'
           : '实现完成。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS',
     );
-    assert.equal(team.phase, 'failed', '永远不允许通过 → 团队失败');
+    assert.equal(team.phase, 'needing-decision', '永远不允许通过 → 待队长决策，不能写成真失败');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 's');
+    const review = graph.tasks.find((task) => task.kind === 'review');
+    assert.equal(review.status, 'blocked');
+    assert.equal(review.needsDecision?.kind, 'review-budget');
+    assert.ok(
+      review.needsDecision?.findings?.some((item) => item.includes('lib/app.js:12')),
+      'findings 应包含评审给出的文件与行号',
+    );
+    assert.ok(
+      review.failure.includes('需队长决策'),
+      '失败摘要要说明这是待决策，而不是普通失败',
+    );
+
+    // 面板数据源：快照必须把 needsDecision 与 findings 下发，否则用户看不到「需队长决策」在等什么
+    const snapshot = await buildSnapshot({ stateRoot: join(dir, '.dsh-teams'), captainSessionId: 's', config: CONFIG });
+    const view = snapshot.tasks.find((task) => task.kind === 'review');
+    assert.equal(view.status, 'blocked');
+    assert.equal(view.needsDecision?.kind, 'review-budget', '快照要带 needsDecision');
+    assert.ok(view.needsDecision?.findings?.length > 0, '快照要能列出评审 findings');
+    assert.equal(snapshot.stats.needsDecision, 1, '统计里要能单独数出待决策任务');
   });
 });
 
@@ -653,10 +680,55 @@ test('驳回时把评审意见带进任务卡（执行者不是盲改）', async
   });
 });
 
+test('安全审查 FAIL 仍是终局阻断（failed），但 findings 必须带出来', async () => {
+  await withDir(async (dir) => {
+    const provider = { name: 'spawn', capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true } };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                const text = spec.label.includes('security-reviewer')
+                  ? 'CRITICAL lib/auth.js:7 未校验越权。证据 lib/auth.js:7 退出码 0\n\nVERDICT: FAIL'
+                  : '证据 src/a.js:1 退出码 0\n\nVERDICT: PASS';
+                return {
+                  childId: 'c1',
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'sec', workspace: dir };
+    await planTeam({ ...base, task: '重构认证模块，跨模块大改', filesTouched: 9, crossModule: true });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 300; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'sec');
+      if (team?.phase === 'done' || team?.phase === 'failed' || team?.phase === 'needing-decision') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'failed', '安全阻断必须保持终局失败，不得降级成待决策');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'sec');
+    const security = graph.tasks.find((task) => task.role === 'security-reviewer');
+    assert.ok(security, 'full 路径应有安全审查任务');
+    assert.equal(security.status, 'failed');
+    assert.equal(security.needsDecision, undefined, '安全阻断不应被标成待决策');
+    assert.ok(
+      security.findings?.some((item) => item.includes('lib/auth.js:7')),
+      '即使终局失败，也要把评审 findings 带出来',
+    );
+  });
+});
+
 /* ================================================================== *
  * 风险关键词：英文屈折 + 中文口语词（审计 M7）
  * ================================================================== */
-
 test('风险词：英文复数/时态/派生形式都能命中', () => {
   for (const text of [
     'rotate the credentials of the worker',
@@ -1458,6 +1530,113 @@ test('派发时把模型写进任务记录，快照才有的显示', async () =>
     assert.ok(
       graph.tasks.every((task) => task.model === 'deepseek-v4.1-flash'),
       `每个任务的记录都该带模型，实际 ${JSON.stringify(graph.tasks.map((t) => t.model))}`,
+    );
+  });
+});
+
+test('质量门：驳回仍在预算内 → 退回重做且不残留 needsDecision/findings', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    let reviews = 0;
+    const provider = {
+      name: 'spawn',
+      capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true },
+    };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                let text = '实现完成。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS';
+                if (spec.label.includes('code-reviewer')) {
+                  reviews += 1;
+                  text =
+                    reviews === 1
+                      ? 'HIGH src/app.js:12 未校验。证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+                      : '复审通过。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS';
+                }
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const base = { ctx, config: CONFIG, agent: { id: 'cap' }, captainSessionId: 'rw-clean', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'rw-clean');
+      if (team?.phase === 'done' || team?.phase === 'failed' || team?.phase === 'needing-decision') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'done', '驳回后第二轮通过，团队应完成');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'rw-clean');
+    const review = graph.tasks.find((task) => task.kind === 'review');
+    assert.equal(review.status, 'done');
+    assert.equal(review.reviewRound, 1, '只驳回了一轮，预算没用完');
+    assert.equal(review.needsDecision, undefined, '预算没用完时绝不能挂待决策标记');
+    assert.equal(review.findings, undefined, '通过后旧 findings 必须过期，不能残留');
+  });
+});
+
+test('质量门：驳回预算为 0 时判 FAIL 直接转待决策（既不静默通过也不写成 failed）', async () => {
+  await withDir(async (dir) => {
+    const calls = [];
+    const provider = {
+      name: 'spawn',
+      capabilities: { agentOptions: true, agentPreset: true, outputSchema: false, depthLimit: true },
+    };
+    const ctx = {
+      get: (key) =>
+        key === 'subagents'
+          ? {
+              getProvider: () => provider,
+              list: () => ['spawn'],
+              startActivation: async (spec) => {
+                calls.push(spec.label);
+                const text = spec.label.includes('code-reviewer')
+                  ? 'HIGH src/app.js:12 未校验。证据 src/app.js:12 退出码 0\n\nVERDICT: FAIL'
+                  : '实现完成。证据 src/app.js:12 退出码 0\n\nVERDICT: PASS';
+                return {
+                  childId: `c${calls.length}`,
+                  result: Promise.resolve({ output: [{ type: 'text', text }], stopReason: 'completed' }),
+                  dispose: async () => {},
+                };
+              },
+            }
+          : undefined,
+      logger: { warn() {}, info() {}, debug() {} },
+    };
+    const config = { ...CONFIG, scheduler: { ...CONFIG.scheduler, maxReviewRounds: 0 } };
+    const base = { ctx, config, agent: { id: 'cap' }, captainSessionId: 'rw-zero', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    let team;
+    for (let i = 0; i < 200; i += 1) {
+      team = await readTeam(join(dir, '.dsh-teams'), 'rw-zero');
+      if (team?.phase === 'done' || team?.phase === 'failed' || team?.phase === 'needing-decision') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(team.phase, 'needing-decision', '没有驳回预算可用 = 预算用尽，应等人拍板');
+    const graph = await readTasks(join(dir, '.dsh-teams'), 'rw-zero');
+    const review = graph.tasks.find((task) => task.kind === 'review');
+    assert.equal(review.status, 'blocked');
+    assert.equal(review.needsDecision?.round, 1, '第 1 轮就没有预算，应记 round=1');
+    assert.equal(review.needsDecision?.maxRounds, 0);
+    assert.equal(
+      calls.filter((label) => label.includes(':t-executor:')).length,
+      1,
+      '预算为 0 时执行者只应被派发一次，不得再退回重做',
     );
   });
 });

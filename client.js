@@ -97,6 +97,11 @@ window.__ModuleLoader__.load({
       'phase.halted': '已暂停',
       'phase.done': '已完成',
       'phase.failed': '失败',
+      'phase.needing-decision': '需队长决策',
+      'decision.title': '需队长决策',
+      'decision.budget': '评审驳回预算已用尽（第 {round} 轮）',
+      'decision.findings': '评审 findings',
+      'decision.hint': '调整改动范围或实现方案后点「续跑」；续跑会重跑这一步。',
       'task.pending': '待派发',
       'task.ready': '就绪',
       'task.running': '进行中',
@@ -319,6 +324,11 @@ window.__ModuleLoader__.load({
       'phase.halted': 'Paused',
       'phase.done': 'Done',
       'phase.failed': 'Failed',
+      'phase.needing-decision': 'Team lead decision needed',
+      'decision.title': 'Team lead decision needed',
+      'decision.budget': 'Review rework budget exhausted (round {round})',
+      'decision.findings': 'Review findings',
+      'decision.hint': 'Adjust the change scope or implementation, then hit Resume; resuming re-runs this step.',
       'task.pending': 'Pending',
       'task.ready': 'Ready',
       'task.running': 'Running',
@@ -530,6 +540,10 @@ window.__ModuleLoader__.load({
   border:1px solid var(--dsw-alias-state-error-primary);
   color:var(--dsw-alias-state-error-primary);
   white-space:pre-wrap;word-break:break-word;}
+/* 「需队长决策」不是错误态：用 warning 色，并给 findings 一个可扫读的缩进 */
+.dsh-teams-decision{border-color:var(--dsw-alias-state-warn-primary);
+  color:var(--dsw-alias-label-primary);}
+.dsh-teams-decision-item{margin-top:3px;font-size:11px;color:var(--dsw-alias-label-secondary);}
 .dsh-teams-details{margin-top:6px;}
 .dsh-teams-details summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary);}
 .dsh-teams-details summary:hover{color:var(--dsw-alias-label-primary);}
@@ -1739,6 +1753,9 @@ window.__ModuleLoader__.load({
         unlocked: [...new Set(unlocked)],
         model: typeof step.model === 'string' && step.model !== '' ? step.model : '—',
         failure: typeof step.failure === 'string' && step.failure !== '' ? step.failure : undefined,
+        // 待队长决策（返工预算耗尽）：详情里直接列出 findings，不要求用户再进会话找结论
+        needsDecision: step.needsDecision,
+        findings: Array.isArray(step.findings) ? step.findings : [],
       };
     }
 
@@ -2054,6 +2071,22 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dsh-teams-flow-detail-failure', title: info.failure },
               `${t('flow.detail.failure')}：${info.failure}`,
+            ),
+        // 需队长决策：把评审 findings 摊在详情里（不是普通失败，颜色用 warning）
+        info.needsDecision === undefined && info.findings.length === 0
+          ? null
+          : h(
+              'div',
+              { className: 'dsh-teams-flow-detail-failure' },
+              info.needsDecision === undefined
+                ? `${t('decision.findings')}（${info.findings.length}）`
+                : `${t('decision.title')}${typeof info.needsDecision.round === 'number' ? ` · ${t('decision.budget').replace('{round}', String(info.needsDecision.round))}` : ''}`,
+              ...(Array.isArray(info.needsDecision?.findings) && info.needsDecision.findings.length > 0
+                ? info.needsDecision.findings
+                : info.findings
+              ).map((item, index) =>
+                h('div', { key: index, className: 'dsh-teams-decision-item' }, `· ${String(item)}`),
+              ),
             ),
       );
     }
@@ -3199,6 +3232,43 @@ window.__ModuleLoader__.load({
             h('div', { className: 'dsh-teams-muted', style: { marginTop: 4 } }, meta),
             budgetBar(task, t),
             task.failure ? h('div', { className: 'dsh-teams-failure' }, String(task.failure)) : null,
+            // 返工预算耗尽：不是失败，是等人拍范围；把 findings 直接摊开，别让人再点进会话找
+            task.needsDecision
+              ? h(
+                  'div',
+                  { className: 'dsh-teams-failure dsh-teams-decision' },
+                  h('strong', null, t('decision.title')),
+                  typeof task.needsDecision.round === 'number'
+                    ? h(
+                        'div',
+                        null,
+                        t('decision.budget').replace('{round}', String(task.needsDecision.round)),
+                      )
+                    : null,
+                  Array.isArray(task.needsDecision.findings) && task.needsDecision.findings.length > 0
+                    ? h(
+                        'div',
+                        { className: 'dsh-teams-decision-item' },
+                        `${t('decision.findings')}（${task.needsDecision.findings.length}）：`,
+                      )
+                    : null,
+                  ...(Array.isArray(task.needsDecision.findings) ? task.needsDecision.findings : []).map(
+                    (item, index) => h('div', { key: index, className: 'dsh-teams-decision-item' }, `· ${String(item)}`),
+                  ),
+                  h('div', { className: 'dsh-teams-muted' }, t('decision.hint')),
+                )
+              : null,
+            // 安全阻断等终局失败也带出 findings（语义不变，只是别丢掉评审说了什么）
+            !task.needsDecision && Array.isArray(task.findings) && task.findings.length > 0
+              ? h(
+                  'details',
+                  { className: 'dsh-teams-details' },
+                  h('summary', null, `${t('decision.findings')}（${task.findings.length}）`),
+                  ...task.findings.map((item, index) =>
+                    h('div', { key: index, className: 'dsh-teams-decision-item' }, `· ${String(item)}`),
+                  ),
+                )
+              : null,
             // 验收标准：审批闸门要用户看着它决定批不批，所以必须可见
             Array.isArray(task.acceptance) && task.acceptance.length > 0
               ? h(

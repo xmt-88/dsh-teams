@@ -1894,6 +1894,64 @@ test('面板：宿主 openSession 抛错时任务行点击不抛；流程图卡�
   assert.equal(componentNamed(flowBox.tree, 'FlowDetail'), undefined, 'Esc 取消钉住');
 });
 
+test('任务板：返工预算耗尽的卡片显示「需队长决策」并摊开 findings，终局失败的 findings 也保留', async () => {
+  const team = {
+    ...PANEL_TEAM,
+    phase: 'needing-decision',
+    tasks: [
+      {
+        id: 't-review',
+        subject: '代码评审',
+        role: 'verifier',
+        roleName: '验证员',
+        status: 'blocked',
+        deps: ['t1'],
+        attempts: [{ attempt: 3 }],
+        needsDecision: {
+          kind: 'review-budget',
+          round: 3,
+          maxRounds: 3,
+          findings: ['HIGH lib/app.js:12 路径穿越'],
+        },
+      },
+      {
+        id: 't-security',
+        subject: '安全审查',
+        role: 'security-reviewer',
+        roleName: '安全审查员',
+        status: 'failed',
+        deps: ['t1'],
+        failure: '安全阻断',
+        findings: ['CRITICAL lib/auth.js:7 硬编码凭据'],
+      },
+    ],
+  };
+  const { workspace } = await mountTeamWorkspace({ team });
+  selectTab(workspace, 'view.tasks');
+  const tree = renderDirect(componentNamed(workspace.tree, 'TasksView'));
+  const text = [];
+  const walk = (node) => {
+    if (typeof node === 'string') {
+      text.push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node && typeof node === 'object') for (const child of node.children ?? []) walk(child);
+  };
+  walk(tree);
+  const joined = text.join('｜');
+  // 测试环境的 t() 返回 key 本身，所以断言 key + 业务文案（findings 是真实内容）
+  assert.ok(joined.includes('decision.title'), '待决策卡片必须显示「需队长决策」，不能混同成普通失败');
+  assert.ok(joined.includes('decision.budget'), '要显示耗尽的轮次');
+  assert.ok(joined.includes('HIGH lib/app.js:12 路径穿越'), 'findings 要直接摊在任务卡上，别让人点进会话找');
+  assert.ok(joined.includes('decision.hint'), '要提示可以续跑/改范围');
+  assert.ok(joined.includes('decision.findings'), '终局失败的 findings 也要保留（可折叠）');
+  assert.ok(joined.includes('CRITICAL lib/auth.js:7 硬编码凭据'), '安全阻断的 findings 不能丢');
+});
+
 /* ================================================================== *
  * F. 依赖曲线视图：分层布局 / SVG 贝塞尔 / 上下游 / 钉住 / 窄宽降级
  * ================================================================== */

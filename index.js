@@ -31,6 +31,17 @@ export const name = 'dsh-teams';
 /** 声明需要的宿主服务；缺失时插件保持不激活而不是抛错。 */
 export const inject = ['tools', 'systemPrompt'];
 
+/** 团队阶段的中文名：`needing-decision` 必须区别于「失败」（返工预算耗尽 ≠ 真失败）。 */
+const PHASE_LABELS = Object.freeze({
+  idle: '空闲',
+  staged: '待审批',
+  running: '运行中',
+  halted: '已暂停',
+  done: '已完成',
+  failed: '失败',
+  'needing-decision': '需队长决策',
+});
+
 /**
  * 插件配置。全部可被用户在 cordis.patch.yml 中覆盖，且升级不丢。
  *
@@ -388,6 +399,8 @@ function registerTools(ctx, config) {
             tasks_total: { type: 'integer' },
             tasks_done: { type: 'integer' },
             tasks_failed: { type: 'integer' },
+            tasks_blocked: { type: 'integer' },
+            needs_decision: { type: 'boolean' },
             next_tasks: { type: 'array', items: { type: 'string' } },
             role_chain: { type: 'array', items: { type: 'string' } },
           },
@@ -395,8 +408,10 @@ function registerTools(ctx, config) {
         render: (_args, value) =>
           renderText(
             value.has_team
-              ? `团队阶段：${value.phase}${value.path_label ? `　路径：${value.path_label}` : ''}${
-                  value.tasks_total ? `　任务 ${value.tasks_done}/${value.tasks_total} 完成` : ''
+              ? `团队阶段：${PHASE_LABELS[value.phase] ?? value.phase}${
+                  value.path_label ? `　路径：${value.path_label}` : ''
+                }${value.tasks_total ? `　任务 ${value.tasks_done}/${value.tasks_total} 完成` : ''}${
+                  value.needs_decision === true ? '　⚠️ 需队长决策（返工预算耗尽，可续跑）' : ''
                 }${value.running ? '　（调度中）' : ''}`
               : '当前会话还没有团队',
           ),
@@ -419,6 +434,9 @@ function registerTools(ctx, config) {
           tasks_total: stats.total,
           tasks_done: stats.done,
           tasks_failed: stats.failed,
+          tasks_blocked: stats.blocked,
+          // 「返工预算耗尽」不是失败：单独标出来，让模型/用户知道该拍板而不是修复
+          needs_decision: stats.needsDecision > 0,
           ...(decision === undefined
             ? {}
             : {
@@ -990,6 +1008,7 @@ function usageSectionText() {
     '路径含义：快速=小改直接实现并审查；标准=先需求后架构再实现；完整=多一轮批判与安全审查；调试=先定位根因再修；部署=备份与回滚优先并独立验证。',
     '涉及认证、支付、凭据、数据安全的改动不要降级路径。',
     '质量门是可机器判定的：评审/验证类角色必须在产出末行写 `VERDICT: PASS|FAIL|BLOCKED`，缺这行按未通过处理；判 FAIL 会自动把实现步骤退回重做（轮数受 maxReviewRounds 限制）。',
+    '驳回轮次用尽时任务标为 `blocked` 并带 `needsDecision`（团队阶段 `needing-decision`，不是失败）：这表示评审要求超出了执行者的改动范围，需人拍板；改范围或方案后用 `teams_retry` 续跑。安全审查 FAIL 仍是终局失败。',
     '角色可停用：被停用的角色不会被派发；`executor` 与 `verifier` 是核心角色不可停用。自定义角色可带触发词，任务命中时会被自动插进流水线。',
   ].join('\n');
 }

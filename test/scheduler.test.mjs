@@ -19,10 +19,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildTaskGraph, pickReady, collectDependencyOutputs, depsSatisfied, summarize } from '../lib/tasks.js';
-import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure } from '../lib/scheduler.js';
+import {
+  buildTaskGraph,
+  pickReady,
+  collectDependencyOutputs,
+  depsSatisfied,
+  summarize,
+  truncateForHandoff,
+  DEP_OUTPUT_LIMIT,
+  DEP_TOTAL_LIMIT,
+} from '../lib/tasks.js';
+import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure, extractFindings } from '../lib/scheduler.js';
 import { buildPersona, buildTaskPrompt, extractOutput, describeStopReason, resolveChildDelegationDepth, resolveTimeoutMs, TIMEOUT_MS } from '../lib/runner.js';
-import { readTasks, readTeam, stateRootOf } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, mutateTasks } from '../lib/state.js';
 import { PATH_TEMPLATES } from '../lib/router.js';
 
 /** 默认配置（与插件 Config 默认值一致）。 */
@@ -267,11 +276,78 @@ test('就绪挑选：依赖失败的任务转为阻塞而不是继续跑', () =>
 test('依赖产物汇总：逐条与总量都受截断保护', () => {
   const graph = buildTaskGraph({ steps: PATH_TEMPLATES.fast, teamId: 's', subject: 'x' });
   graph.tasks[0].status = 'done';
-  graph.tasks[0].output = 'A'.repeat(5000);
+  graph.tasks[0].output = 'A'.repeat(DEP_OUTPUT_LIMIT + 3000);
 
   const text = collectDependencyOutputs(graph.tasks[1], graph.tasks);
   assert.ok(text.includes('t-executor') || text.includes('开发执行者'), '应带来源标注');
-  assert.ok(text.length < 5000, '超长输出应被截断');
+  assert.ok(text.length < graph.tasks[0].output.length, '超长输出应被截断');
+  assert.ok(text.length <= DEP_TOTAL_LIMIT, '总量不得超上限');
+});
+
+test('交接截断：超限时保留开头 + 全部文件:行号 + 结尾 VERDICT', () => {
+  const body = Array.from({ length: 60 }, (_, index) => `第 ${index} 行正文，用来把报告撑长。`).join('\n');
+  const report = [
+    '## 代码审查报告',
+    body,
+    '发现：',
+    '- HIGH lib/a.js:12 路径穿越：未校验 ..',
+    '- MEDIUM lib/b.js:34 缺少长度限制',
+    '证据：`lib/a.js:12`、`lib/b.js:34`，退出码 0。',
+    Array.from({ length: 60 }, (_, index) => `附录 ${index}：无关正文。`).join('\n'),
+    '',
+    '结论：存在 HIGH 问题，需返工。',
+    '',
+    'VERDICT: FAIL',
+  ].join('\n');
+  assert.ok(report.length > 1200);
+
+  const cut = truncateForHandoff(report, 1200);
+  assert.ok(cut.length <= 1200, `截断后不得超过上限，实际 ${cut.length}`);
+  assert.ok(cut.includes('## 代码审查报告'), '必须保留开头');
+  assert.ok(cut.includes('lib/a.js:12'), '必须保留文件:行号证据');
+  assert.ok(cut.includes('lib/b.js:34'), '所有文件:行号都要保留');
+  assert.match(cut, /VERDICT: FAIL\s*$/, '结尾的判定行不能被切掉');
+
+  // 极端：正文没有换行、结尾几行很长——仍然必须保留开头（结尾块不能把额度吃光）
+  const flat = `${'正文'.repeat(1500)}\n发现：HIGH lib/x.js:7 越权\n\nVERDICT: FAIL`;
+  const flatCut = truncateForHandoff(flat, 2000);
+  assert.ok(flatCut.startsWith('正文'), '开头必须保留');
+  assert.ok(flatCut.includes('lib/x.js:7'), '文件:行号必须保留');
+  assert.match(flatCut, /VERDICT: FAIL\s*$/, '判定行必须保留');
+});
+
+test('交接截断：不超限时原样返回，恰好等于上限也不截断', () => {
+  const text = 'a'.repeat(100);
+  assert.equal(truncateForHandoff(text, 200), text);
+  assert.equal(truncateForHandoff(text, 100), text, '恰好等于上限不应被视为超限');
+  assert.equal(truncateForHandoff('', 10), '');
+  assert.equal(truncateForHandoff('abc', 0), '');
+});
+
+test('交接截断：收集依赖产物时不丢结论（VERDICT 仍在）', () => {
+  const graph = buildTaskGraph({ steps: PATH_TEMPLATES.fast, teamId: 's', subject: 'x' });
+  graph.tasks[0].status = 'done';
+  graph.tasks[0].output = `${'正文'.repeat(3000)}\n\n问题：CRITICAL lib/x.js:9 越权\n\nVERDICT: FAIL`;
+  const text = collectDependencyOutputs(graph.tasks[1], graph.tasks);
+  assert.match(text, /VERDICT: FAIL\s*$/, '交接文本结尾必须仍能解析到判定');
+  assert.ok(text.includes('lib/x.js:9'), 'findings 的文件:行号要留下');
+  assert.ok(text.length <= DEP_TOTAL_LIMIT, '总量不得超上限');
+});
+
+test('findings 提取：挑带严重等级的行并截短，跳过 VERDICT 行', () => {
+  const findings = extractFindings(
+    [
+      '# 审查报告',
+      '- HIGH lib/a.js:12 路径穿越',
+      '- **HIGH** `lib/c.js:5` 加粗写法也要认',
+      '- 无关正文',
+      'VERDICT: FAIL',
+    ].join('\n'),
+  );
+  assert.deepEqual(findings, ['HIGH lib/a.js:12 路径穿越', 'HIGH `lib/c.js:5` 加粗写法也要认']);
+  assert.equal(extractFindings('不过。\n\nVERDICT: FAIL').length, 0, '没有 finding 时不臆造');
+  const long = `HIGH lib/a.js:1 ${'很长的描述'.repeat(60)}`;
+  assert.ok(extractFindings(long)[0].length <= 160, '单条 findings 必须截短');
 });
 
 test('依赖产物汇总：没有产物时返回空串，不产生空小节', () => {
@@ -1234,6 +1310,24 @@ test('运行器：任务卡包含目标、验收标准、范围与上游产出',
   assert.ok(prompt.includes('把按钮颜色改深'), '应含团队总目标');
 });
 
+test('运行器：评审任务卡的硬规则——范围外发现单列，不作 FAIL 依据', () => {
+  const graph = buildTaskGraph({
+    steps: PATH_TEMPLATES.fast,
+    teamId: 's',
+    subject: '改个按钮颜色',
+    scope: { inScope: ['src/**'], outOfScope: ['package.json'] },
+  });
+  const review = graph.tasks.find((task) => task.kind === 'review');
+  assert.ok(
+    review.acceptance.some((item) => item.includes('范围外发现单列')),
+    '评审验收项必须写明范围外发现不作为 FAIL 依据',
+  );
+  const prompt = buildTaskPrompt({ task: review, teamGoal: '改个按钮颜色' });
+  assert.ok(prompt.includes('评审范围（硬规则'), '任务卡要写清评审范围的硬规则');
+  assert.ok(prompt.includes('不作 FAIL 依据'), '范围外发现不得作为 FAIL 依据');
+  assert.ok(prompt.includes('是否为本次改动引入'), '安全类范围外发现要注明是否本次引入');
+});
+
 /* ================================================================== *
  * 工具函数
  * ================================================================== */
@@ -1258,4 +1352,222 @@ test('depsSatisfied：done 与 skipped 都算满足', () => {
   assert.equal(depsSatisfied(tasks[2], byId), true);
   tasks[1].status = 'running';
   assert.equal(depsSatisfied(tasks[2], byId), false);
+});
+
+/* ================================================================== *
+ * 根因回归（测试工程师补充的验收用例）
+ *   ① 返工死锁：例外路径的恢复（续跑清标记）+ 评审范围规则
+ *   ② 交接截断：2000/12000 → 6000/24000，超限保留开头 + 全部文件:行号 + 结尾
+ * ================================================================== */
+
+test('交接上限：单条 6000、总量 24000（旧的 2000/12000 已失效）', () => {
+  assert.equal(DEP_OUTPUT_LIMIT, 6000, '单条依赖产物上限必须是 6000');
+  assert.equal(DEP_TOTAL_LIMIT, 24000, '总量上限必须是 24000');
+});
+
+test('交接截断：用户实测的 2610 / 2924 字报告不再被切掉 VERDICT', () => {
+  for (const size of [2610, 2924]) {
+    const report = `${'报告正文。'.repeat(600).slice(0, size - 15)}\n\nVERDICT: FAIL`;
+    assert.ok(report.length <= DEP_OUTPUT_LIMIT, '前提：老报告长度应落进新单条上限');
+    const out = truncateForHandoff(report, DEP_OUTPUT_LIMIT);
+    assert.equal(out, report, `${report.length} 字报告在新上限内应原样交接，不得截断`);
+    assert.match(out, /VERDICT: FAIL\s*$/, '结尾 VERDICT 必须可见');
+  }
+});
+
+test('交接截断：超过单条上限时保留开头 + 全部文件:行号 + 结尾 VERDICT', () => {
+  const filler = (count, tag) =>
+    Array.from({ length: count }, (_, index) => `${tag} 第 ${index} 行：无关正文，用于把报告撑长。`).join('\n');
+  const report = [
+    '## 代码审查报告',
+    filler(220, '前段'),
+    '- HIGH lib/a.js:12 路径穿越',
+    '- HIGH lib/b.js:34 越权',
+    '- MEDIUM lib/c.js:56 长度限制',
+    '证据链：lib/d.js:78、lib/e.js:90',
+    filler(120, '后段'),
+    '## 结论',
+    '存在 HIGH 问题，需返工。',
+    '',
+    'VERDICT: FAIL',
+  ].join('\n');
+  assert.ok(report.length > DEP_OUTPUT_LIMIT, '前提：报告必须超过 6000 字才会触发截断');
+
+  const out = truncateForHandoff(report, DEP_OUTPUT_LIMIT);
+  assert.ok(out.length <= DEP_OUTPUT_LIMIT, `截断后不得超过上限，实际 ${out.length}`);
+  assert.ok(out.startsWith('## 代码审查报告'), '必须保留开头');
+  for (const ref of ['lib/a.js:12', 'lib/b.js:34', 'lib/c.js:56', 'lib/d.js:78', 'lib/e.js:90']) {
+    assert.ok(out.includes(ref), `必须保留文件:行号证据 ${ref}`);
+  }
+  assert.match(out, /VERDICT: FAIL\s*$/, '结尾 VERDICT 不能被切掉');
+});
+
+test('依赖产物汇总：总量用尽时不静默丢弃后续来源', () => {
+  const tasks = [
+    { id: 't', deps: ['a', 'b', 'c', 'd', 'e'], status: 'pending' },
+    { id: 'a', roleName: '甲', status: 'done', output: 'A'.repeat(6000) },
+    { id: 'b', roleName: '乙', status: 'done', output: 'B'.repeat(6000) },
+    { id: 'c', roleName: '丙', status: 'done', output: 'C'.repeat(6000) },
+    { id: 'd', roleName: '丁', status: 'done', output: 'D'.repeat(5800) },
+    { id: 'e', roleName: '戊', status: 'done', output: 'E'.repeat(1500) },
+  ];
+  const text = collectDependencyOutputs(tasks[0], tasks);
+  for (const name of ['甲', '乙', '丙', '丁', '戊']) {
+    assert.ok(text.includes(`### ${name}`), `依赖来源 ${name} 必须保留小节标题`);
+  }
+  assert.match(text, /未交接|已智能截断/, '被省略的来源必须明确标注，不能静默丢弃');
+});
+
+test('运行器：评审范围硬规则只加在评审/验证任务卡，普通实现卡不加', () => {
+  const graph = buildTaskGraph({ steps: PATH_TEMPLATES.full, teamId: 's', subject: '跨模块重构' });
+  const impl = graph.tasks.find((task) => task.kind === 'implementation');
+  const verify = graph.tasks.find((task) => task.kind === 'verification');
+  assert.ok(impl && verify, 'full 路径应同时有实现与验证任务');
+  assert.ok(
+    verify.acceptance.some((item) => item.includes('范围外问题单列')),
+    '验证任务的验收项必须包含范围外单列规则',
+  );
+  assert.ok(
+    buildTaskPrompt({ task: verify }).includes('评审范围（硬规则'),
+    '验证任务卡必须写明只对本次改动范围判 FAIL',
+  );
+  assert.ok(
+    !buildTaskPrompt({ task: impl }).includes('评审范围（硬规则'),
+    '实现任务卡不应出现评审范围规则（避免与 in_scope 禁令重复冲突）',
+  );
+});
+
+test('续跑：待决策的评审门重置为 pending，并清掉 needsDecision/findings', async () => {
+  await withWorkspace(async (dir) => {
+    const base = {
+      ctx: fakeCtx(fakeSubagents()),
+      config: CONFIG,
+      agent: FAKE_AGENT,
+      captainSessionId: 'retry-nd',
+      workspace: dir,
+    };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+    await mutateTasks(stateRoot, 'retry-nd', (graph) => {
+      const review = graph.tasks.find((task) => task.kind === 'review');
+      review.status = 'blocked';
+      review.needsDecision = {
+        kind: 'review-budget',
+        round: 3,
+        maxRounds: 3,
+        gate: review.id,
+        at: new Date().toISOString(),
+        findings: ['HIGH lib/a.js:12'],
+      };
+      review.findings = ['HIGH lib/a.js:12'];
+      review.failure = '需队长决策';
+      return graph;
+    });
+
+    const result = await retryFailedTeam(base);
+    assert.equal(result.started, true, '有待决策任务时应允许续跑');
+    const graph = await readTasks(stateRoot, 'retry-nd');
+    const review = graph.tasks.find((task) => task.kind === 'review');
+    assert.equal(review.status, 'pending', '续跑后应重新排队');
+    assert.equal(review.needsDecision, undefined, '旧决策标记必须清除，否则收口仍是待决策');
+    assert.equal(review.findings, undefined, '旧 findings 必须清除');
+    assert.equal(review.failure, undefined, '旧失败说明必须清除');
+  });
+});
+
+test('交接截断：只剩 200 字额度时结尾 VERDICT 仍必须保留（边界）', () => {
+  const report = `${'正文内容。'.repeat(200)}\n\n发现 HIGH lib/z.js:9\n\nVERDICT: FAIL`;
+  const out = truncateForHandoff(report, 200);
+  assert.ok(out.length <= 200, `截断后不得超过上限，实际 ${out.length}`);
+  assert.match(out, /VERDICT: FAIL\s*$/, '即使只剩 200 字，结尾结论也不能被切掉');
+});
+
+test('交接截断：上限小到省略说明都放不下时，优先保结论而不是说明', () => {
+  const report = `${'正文内容。'.repeat(100)}\n\n发现 HIGH lib/z.js:9\n\nVERDICT: FAIL`;
+  for (const limit of [200, 120, 60, 50, 44, 20]) {
+    const out = truncateForHandoff(report, limit);
+    assert.ok(out.length <= limit, `limit=${limit}：截断后不得超过上限，实际 ${out.length}`);
+    assert.match(out, /VERDICT: FAIL\s*$/, `limit=${limit}：省略说明不能把结尾结论挤掉`);
+  }
+});
+
+test('依赖产物汇总：第 5 条依赖只剩 200 字额度时，它的 VERDICT 不被切掉（端到端）', () => {
+  const tasks = [
+    { id: 't', deps: ['a', 'b', 'c', 'd', 'e'], status: 'pending' },
+    { id: 'a', roleName: '甲', status: 'done', output: 'A'.repeat(6000) },
+    { id: 'b', roleName: '乙', status: 'done', output: 'B'.repeat(6000) },
+    { id: 'c', roleName: '丙', status: 'done', output: 'C'.repeat(6000) },
+    { id: 'd', roleName: '丁', status: 'done', output: 'D'.repeat(5800) },
+    {
+      id: 'e',
+      roleName: '戊',
+      status: 'done',
+      output: `${'审查正文。'.repeat(150)}\n\n发现 HIGH lib/z.js:9\n\nVERDICT: FAIL`,
+    },
+  ];
+  const text = collectDependencyOutputs(tasks[0], tasks);
+  assert.ok(text.includes('### 戊'), '第 5 条依赖不能被静默丢弃');
+  assert.match(text, /VERDICT: FAIL\s*$/, '只剩 200 字额度时也不能切断第 5 条的结论');
+});
+
+test('评审范围规则：review 与 verification 两类门卡都写「只判本次改动范围」，实现卡不写', () => {
+  const graph = buildTaskGraph({ steps: PATH_TEMPLATES.full, teamId: 's', subject: '跨模块重构' });
+  const review = graph.tasks.find((task) => task.kind === 'review');
+  assert.ok(review, 'full 路径应有代码评审任务');
+  assert.ok(
+    review.acceptance.some((item) => item.includes('范围外发现单列')),
+    '评审任务的验收项必须包含「范围外发现单列」',
+  );
+  const prompt = buildTaskPrompt({ task: review });
+  assert.ok(prompt.includes('评审范围（硬规则'), '评审任务卡必须写明判定范围');
+  assert.ok(prompt.includes('不作 FAIL 依据'), '范围外发现不得作为 FAIL 依据');
+  assert.ok(prompt.includes('是否为本次改动引入'), '范围外安全问题要注明是否本次引入');
+  const impl = graph.tasks.find((task) => task.kind === 'implementation');
+  assert.ok(!buildTaskPrompt({ task: impl }).includes('不作 FAIL 依据'), '实现卡不应出现评审口径');
+});
+
+test('findings 提取：最多 5 条、识别中文严重等级、无等级时退回文件:行号行', () => {
+  const many = Array.from({ length: 9 }, (_, index) => `- HIGH lib/a${index}.js:${index + 1} 问题 ${index}`).join('\n');
+  assert.equal(extractFindings(many).length, 5, 'findings 条数必须封顶 5');
+  const zh = extractFindings('严重 lib/a.js:1 越权\n高危 lib/b.js:2 注入\nVERDICT: FAIL');
+  assert.equal(zh.length, 2, '中文严重等级（严重/高危）也要识别');
+  const fallback = extractFindings('- 缺少校验 lib/c.js:3\n- 无关正文\nVERDICT: FAIL');
+  assert.deepEqual(fallback, ['缺少校验 lib/c.js:3'], '没有严重等级时退回带文件:行号的行');
+  assert.equal(extractFindings('VERDICT: FAIL\n# 标题').length, 0, '只有判定行与标题时不臆造 finding');
+});
+
+test('交接截断：多上限 × 多形态扫描——永不越界，额度够时 VERDICT 必定保留', () => {
+  const shapes = [
+    `${'正文。'.repeat(2000)}\n\nVERDICT: FAIL`,
+    `${'正文。'.repeat(300)}\n- HIGH lib/a.js:12 越权\n- HIGH lib/b.js:34 注入\n${'附录。'.repeat(300)}\n\n结论：需返工\nVERDICT: FAIL`,
+    `无换行的长正文${'x'.repeat(3000)}\n\nVERDICT: FAIL`,
+  ];
+  for (const report of shapes) {
+    for (let limit = 1; limit <= 400; limit += 7) {
+      const out = truncateForHandoff(report, limit);
+      assert.ok(out.length <= limit, `limit=${limit}：截断后 ${out.length} 字越界`);
+      if (limit >= 15) {
+        assert.ok(out.includes('VERDICT: FAIL'), `limit=${limit}：结论行必须保留：${JSON.stringify(out)}`);
+      }
+    }
+    for (const limit of [800, 1200, 2000, 6000]) {
+      const out = truncateForHandoff(report, limit);
+      assert.ok(out.length <= limit, `limit=${limit}：截断后 ${out.length} 字越界`);
+      assert.ok(out.includes('VERDICT: FAIL'), `limit=${limit}：结论行必须保留`);
+    }
+  }
+});
+
+test('统计：待决策与失败分开计数，blocked 不混进 failed', () => {
+  const stats = summarize([
+    { id: 'a', status: 'blocked', needsDecision: { kind: 'review-budget', round: 3 } },
+    { id: 'b', status: 'blocked' },
+    { id: 'c', status: 'failed' },
+    { id: 'd', status: 'done' },
+  ]);
+  assert.equal(stats.failed, 1, '真失败只数真失败');
+  assert.equal(stats.blocked, 2, 'blocked 单独计数');
+  assert.equal(stats.needsDecision, 1, '待决策单独计数');
+  assert.equal(stats.total, 4);
 });

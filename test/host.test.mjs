@@ -20,7 +20,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
-import { readTasks, readTeam, stateRootOf } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, writeTasks } from '../lib/state.js';
 import { isRunning } from '../lib/scheduler.js';
 
 /** 造一个最小的假 cordis 上下文：只提供插件实际使用的成员。 */
@@ -226,6 +226,41 @@ test('teams_status 在无团队时如实返回 has_team=false，而不是报错'
     const status = await callTool(ctx, 'teams_status', {}, fakeExec(dir));
     assert.equal(status.has_team, false);
     assert.ok(status.state_dir.includes('.dsh-teams'));
+  });
+});
+
+test('teams_status：返工预算耗尽的评审门标出 needs_decision，不等于单纯失败', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    await callTool(ctx, 'teams_route', { task: '修两个根因' }, exec);
+    const stateRoot = stateRootOf(dir, '.dsh-teams');
+    await writeTasks(stateRoot, 'session-test-1', {
+      tasks: [
+        {
+          id: 't-review',
+          role: 'verifier',
+          roleName: '验证员',
+          status: 'blocked',
+          deps: [],
+          needsDecision: {
+            kind: 'review-budget',
+            round: 3,
+            maxRounds: 3,
+            findings: ['HIGH lib/app.js:12 路径穿越'],
+          },
+        },
+      ],
+    });
+
+    const status = await callTool(ctx, 'teams_status', {}, exec);
+    assert.equal(status.needs_decision, true, '状态工具要能把待决策单独标出来');
+    assert.equal(status.tasks_blocked, 1);
+
+    const blocks = ctx.__tools.get('teams_status').output.render({}, status);
+    assert.ok(
+      blocks.some((block) => String(block.text).includes('需队长决策')),
+      '渲染文本要提示「需队长决策」，让人知道该拍板而不是修代码',
+    );
   });
 });
 
