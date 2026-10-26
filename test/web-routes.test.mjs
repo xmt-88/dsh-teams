@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { authenticatedWebRoutes, registerStateRoutes, buildSnapshot } from '../lib/web-routes.js';
-import { ensureStateDirs, ensureTeam, mutateTeam, appendEvent, writeTasks, appendRunRecord, readEvents } from '../lib/state.js';
+import { ensureStateDirs, ensureTeam, mutateTeam, appendEvent, writeTasks, appendRunRecord, readEvents, readTeam } from '../lib/state.js';
 
 /** 最小 ServerResponse 替身：记录状态码、头与正文。 */
 function fakeResponse() {
@@ -59,7 +59,7 @@ function fakeJsonRequest(url, body, method = 'POST') {
 }
 
 /** 注册路由并取回它（便于直接调用 handler）。 */
-function captureRoutes(config, connection, workspaceRegistry, stopRun) {
+function captureRoutes(config, connection, workspaceRegistry, stopRun, startRun) {
   const registered = [];
   const rawServer = {
     register(route) {
@@ -68,7 +68,7 @@ function captureRoutes(config, connection, workspaceRegistry, stopRun) {
     },
   };
   const webServer = authenticatedWebRoutes(rawServer, () => connection());
-  registerStateRoutes({ webServer, config, workspaceRegistry, stopRun });
+  registerStateRoutes({ webServer, config, workspaceRegistry, stopRun, startRun });
   return registered;
 }
 
@@ -704,5 +704,235 @@ test('停止路由：不注入实现时走真正的 stopRun（没有循环 → s
 
     assert.equal(res.record.status, 200);
     assert.deepEqual(JSON.parse(res.record.body), { stopped: false, captainSessionId: sessionId });
+  });
+});
+
+/* ================================================================== *
+ * 批准并启动路由（POST /plugins/dsh-teams/approve-start）
+ *
+ * 用户实测缺陷：`teams_approve` 之后面板仍显示「待审批」——因为批准故意不改 phase，
+ * 而面板此前只认 phase。这条路由把批准 + 启动合成一次点击，并且必须把
+ * 「批准了」与「启动了」分开回报：宿主没启动能力时不能假装已启动。
+ * ================================================================== */
+
+/** 取批准并启动路由。 */
+function captureApproveStartRoute(config, connection, workspaceRegistry, startRun) {
+  const routes = captureRoutes(config, connection, workspaceRegistry, undefined, startRun);
+  const route = routes.find((item) => item.path === '/plugins/dsh-teams/approve-start');
+  assert.ok(route, '应注册批准并启动路由');
+  return route;
+}
+
+const APPROVE_CONFIG = { stateDir: '.dsh-teams' };
+const OK_CONNECTION = () => ({ requestRejection: () => undefined });
+
+/** 造一张只有一个待派发任务的图（批准要求任务图非空）。 */
+async function seedGraph(stateRoot, sessionId) {
+  await writeTasks(stateRoot, sessionId, {
+    seq: 1,
+    tasks: [{ id: 't1', subject: '实现', role: 'executor', roleName: '开发执行者', status: 'pending', deps: [] }],
+  });
+}
+
+test('快照：批准后 /state 透出 approvedAt，而 phase 不变（面板只能从这里知道批准成功）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-snapshot-approve';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+    const registry = () => ({ list: () => [{ path: dir }] });
+    const stateRoute = captureRoute(APPROVE_CONFIG, OK_CONNECTION, registry);
+
+    const before = fakeResponse();
+    await stateRoute.handler(fakeRequest(`/plugins/dsh-teams/state?session=${sessionId}`), before);
+    const beforeTeam = JSON.parse(before.record.body).team;
+    assert.equal(beforeTeam.approvedAt, undefined, '未批准时不下发 approvedAt');
+
+    // 走真实用户路径：面板点一次「批准并启动」
+    const approveRoute = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, registry, () => ({ started: true }));
+    await approveRoute.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), fakeResponse());
+
+    const after = fakeResponse();
+    await stateRoute.handler(fakeRequest(`/plugins/dsh-teams/state?session=${sessionId}`), after);
+    const afterTeam = JSON.parse(after.record.body).team;
+    assert.ok(afterTeam.approvedAt, '批准后快照必须带 approvedAt——面板只能靠它显示「已批准 · 待启动」');
+    assert.equal(afterTeam.phase, beforeTeam.phase, '批准不改 phase（否则面板会假装在跑、闸门也会失效）');
+    assert.equal(afterTeam.runs[0].phase, afterTeam.phase, '运行行 phase 同样不变');
+  });
+});
+
+test('批准并启动：POST 先批准（写 approvedAt）再调注入的启动实现，两个结果分开回报', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+    const phaseBefore = (await readTeam(stateRoot, sessionId)).phase;
+
+    const calls = [];
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true };
+    });
+
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.equal(res.record.headers['cache-control'], 'no-store', '写结果不得被缓存');
+    assert.deepEqual(JSON.parse(res.record.body), { approved: true, started: true, captainSessionId: sessionId });
+
+    // 批准真的落盘了，而且**没有**改 phase（改了会让 teams_run 的闸门失效）
+    const team = await readTeam(stateRoot, sessionId);
+    assert.ok(team.approvedAt, '批准必须写 approvedAt——面板靠它显示「已批准 · 待启动」');
+    assert.equal(team.phase, phaseBefore, '批准完全不改 phase（否则面板会假装在跑，闸门也会失效）');
+    assert.ok(team.approvedGraph, '批准要记下任务图指纹');
+
+    assert.equal(calls.length, 1, '应调用一次启动实现');
+    assert.equal(calls[0].captainSessionId, sessionId);
+    assert.equal(calls[0].workspace, dir, '必须把工作区（而不是状态根）交给启动实现');
+    assert.equal(calls[0].stateRoot, stateRoot, '定位到的状态根一并给出');
+
+    const events = await readEvents(stateRoot, 20);
+    assert.equal(
+      events.filter((event) => event.type === 'gate' && event.data?.action === 'approve').length,
+      1,
+      '批准要留审计事件（且只留一条，不重复记）',
+    );
+  });
+});
+
+test('批准并启动：宿主没提供启动能力时如实回 started=false，绝不假装已启动', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve-nostart';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    // 不传 startRun：模拟旧宿主（index.js 未接线）
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }));
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.approved, true, '批准仍然生效');
+    assert.equal(body.started, false, '没有启动能力就必须回 false');
+    assert.match(body.reason, /未提供启动能力/, '要给出可显示的原因');
+    // 批准是真实的：面板刷新后应显示「已批准 · 待启动」而不是「运行中」
+    assert.ok((await readTeam(stateRoot, sessionId)).approvedAt);
+  });
+});
+
+test('批准并启动：任务图为空 → approved=false 并给出原因，且不调用启动实现', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve-empty';
+    await seedTeam(stateRoot, sessionId, dir); // 故意不写任务图
+
+    const calls = [];
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true };
+    });
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.approved, false);
+    assert.equal(body.started, false);
+    assert.match(body.reason, /任务图为空/);
+    assert.equal(calls.length, 0, '没批准就绝不启动');
+    assert.equal((await readTeam(stateRoot, sessionId)).approvedAt, undefined, '被拒时不得写批准时间');
+  });
+});
+
+test('批准并启动：定位不到团队 → 200 approved=false，且不启动', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const calls = [];
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true };
+    });
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: 'session-nobody' }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.deepEqual(JSON.parse(res.record.body), { approved: false, started: false, reason: '当前会话还没有团队计划' });
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('批准并启动：400（坏 JSON / 缺 session）与 405（非 POST）', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const calls = [];
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true };
+    });
+
+    const badJson = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', '{not json'), badJson);
+    assert.equal(badJson.record.status, 400);
+    assert.match(badJson.record.body, /invalid json body/);
+
+    for (const body of [{}, { session: '' }, { session: '   ' }, { session: 42 }]) {
+      const missing = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', body), missing);
+      assert.equal(missing.record.status, 400, `缺 session 应 400：${JSON.stringify(body)}`);
+      assert.match(missing.record.body, /missing session parameter/);
+    }
+
+    const get = fakeResponse();
+    await route.handler(fakeRequest('/plugins/dsh-teams/approve-start', 'GET'), get);
+    assert.equal(get.record.status, 405);
+
+    assert.equal(calls.length, 0, '非法请求不得启动任何东西');
+  });
+});
+
+test('批准并启动：鉴权与读路由同款（503/401/403），被拒时绝不批准也不启动', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve-gate';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    const gates = [
+      [() => undefined, 503, /authentication unavailable/],
+      [() => ({ requestRejection: () => 401 }), 401, /unauthorized/],
+      [() => ({ requestRejection: () => 403 }), 403, /forbidden/],
+    ];
+    for (const [connection, status, pattern] of gates) {
+      const calls = [];
+      const route = captureApproveStartRoute(APPROVE_CONFIG, connection, () => ({ list: () => [{ path: dir }] }), (input) => {
+        calls.push(input);
+        return { started: true };
+      });
+      const res = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+      assert.equal(res.record.status, status, `应返回 ${status}`);
+      assert.match(res.record.body, pattern);
+      assert.equal(calls.length, 0, '被拒请求不得启动');
+    }
+    // 三次被拒都没批准：写操作必须挡在业务正文之前
+    assert.equal((await readTeam(stateRoot, sessionId)).approvedAt, undefined, '被拒请求不得写批准时间');
+  });
+});
+
+test('批准并启动：启动实现抛错 → 500 且如实带原因（已批准的事实不被抹掉）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve-throw';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), () => {
+      throw new Error('agent offline');
+    });
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 500);
+    assert.match(res.record.body, /approve-start failed/);
+    assert.match(res.record.body, /agent offline/);
+    // 批准先于启动完成，所以它已经落盘——面板刷新后显示「已批准 · 待启动」
+    assert.ok((await readTeam(stateRoot, sessionId)).approvedAt);
   });
 });

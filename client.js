@@ -92,6 +92,7 @@ window.__ModuleLoader__.load({
       'watch.observed': '已观测',
       'phase.idle': '空闲',
       'phase.staged': '待审批',
+      'phase.stagedApproved': '已批准 · 待启动',
       'phase.running': '运行中',
       'phase.halted': '已暂停',
       'phase.done': '已完成',
@@ -106,7 +107,7 @@ window.__ModuleLoader__.load({
       'log.empty': '暂无事件',
       'refresh': '刷新',
 
-      // ---- 会话跳转与停止（停止是团队面板唯一的写操作） ----
+      // ---- 会话跳转、停止与批准（面板的两个写操作） ----
       'session.unavailable': '宿主没有提供打开会话的能力',
       'session.none': '还没有可打开的会话',
       'stop.button': '停止',
@@ -122,6 +123,18 @@ window.__ModuleLoader__.load({
       'stop.forbidden': '当前会话无权停止这一轮',
       'stop.noRoute': '宿主没有提供停止接口（插件版本过旧）',
       'stop.authUnavailable': '鉴权服务不可用，暂时无法停止',
+      // ---- 批准并启动（面板第二个写操作） ----
+      'approve.button': '批准并启动',
+      'approve.start': '启动',
+      'approve.startHint': '已批准，点这里启动调度',
+      'approve.approving': '批准中…',
+      'approve.started': '已批准，正在启动…',
+      'approve.approvedOnly': '已批准，未启动',
+      'approve.failed': '批准失败，请重试',
+      'approve.approvedStartFailed': '已批准，但启动失败，可再点一次重试',
+      'approve.forbidden': '当前会话无权批准这一轮',
+      'approve.noRoute': '宿主没有提供批准接口（插件版本过旧）',
+      'approve.authUnavailable': '鉴权服务不可用，暂时无法批准',
 
       // ---- 角色页 ----
       'role.title': '角色',
@@ -301,6 +314,7 @@ window.__ModuleLoader__.load({
       'watch.observed': 'observed',
       'phase.idle': 'Idle',
       'phase.staged': 'Awaiting approval',
+      'phase.stagedApproved': 'Approved · waiting to start',
       'phase.running': 'Running',
       'phase.halted': 'Paused',
       'phase.done': 'Done',
@@ -315,7 +329,7 @@ window.__ModuleLoader__.load({
       'log.empty': 'No events yet',
       'refresh': 'Refresh',
 
-      // ---- session jump and stop (the panel's only write) ----
+      // ---- session jump, stop and approval (the panel's two writes) ----
       'session.unavailable': 'This host does not expose session opening',
       'session.none': 'No session to open yet',
       'stop.button': 'Stop',
@@ -331,6 +345,18 @@ window.__ModuleLoader__.load({
       'stop.forbidden': 'This session is not allowed to stop the run',
       'stop.noRoute': 'The host does not provide the stop endpoint (plugin too old)',
       'stop.authUnavailable': 'Authentication is unavailable, cannot stop right now',
+      // ---- approve and start (the panel's second write) ----
+      'approve.button': 'Approve & start',
+      'approve.start': 'Start',
+      'approve.startHint': 'Already approved — click to start the run',
+      'approve.approving': 'Approving…',
+      'approve.started': 'Approved, starting…',
+      'approve.approvedOnly': 'Approved, not started',
+      'approve.failed': 'Approval failed, please retry',
+      'approve.approvedStartFailed': 'Approved, but starting failed — click again to retry',
+      'approve.forbidden': 'This session is not allowed to approve the run',
+      'approve.noRoute': 'The host does not provide the approve endpoint (plugin too old)',
+      'approve.authUnavailable': 'Authentication is unavailable, cannot approve right now',
 
       // ---- roles page ----
       'role.title': 'Roles',
@@ -683,16 +709,25 @@ window.__ModuleLoader__.load({
 .dsh-teams-run-seg[data-status="pending"]{background:var(--dsw-alias-border-l2);}
 .dsh-teams-run-body{padding:0 10px 10px;}
 .dsh-teams-run[data-phase="running"]{border-color:var(--dsw-alias-brand-primary);}
-/* 停止入口只出现在当前轮的标题行：多一列，其余轮次布局零位移 */
-.dsh-teams-run-head[data-has-stop="true"]{grid-template-columns:34px minmax(0,1fr) auto auto 12px;}
-.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-chevron{grid-column:5;}
-.dsh-teams-run-head[data-has-stop="true"] .dsh-teams-run-stop{grid-column:4;}
+/* 标题行动作位：停止（运行中）与「批准并启动」（待审批）互斥，共用第 4 列——
+   多出一列只在这一轮出现，其余轮次布局零位移。 */
+.dsh-teams-run-head[data-has-action="true"]{grid-template-columns:34px minmax(0,1fr) auto auto 12px;}
+.dsh-teams-run-head[data-has-action="true"] .dsh-teams-run-chevron{grid-column:5;}
+.dsh-teams-run-head[data-has-action="true"] .dsh-teams-run-stop{grid-column:4;}
+.dsh-teams-run-head[data-has-action="true"] .dsh-teams-run-approve{grid-column:4;}
 .dsh-teams-run-stop{grid-row:1 / span 2;grid-column:4;justify-self:end;font-size:11px;
   padding:2px 9px;white-space:nowrap;
   color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 65%,var(--dsw-alias-label-primary));
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));}
 .dsh-teams-run-stop:hover{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent);
   color:var(--dsw-alias-label-primary);}
+/* 批准并启动：与停止同一个位置、同一档字号；用品牌色而不是错误色（这是正向动作） */
+.dsh-teams-run-approve{grid-row:1 / span 2;grid-column:4;justify-self:end;font-size:11px;
+  padding:2px 9px;white-space:nowrap;
+  color:var(--dsw-alias-brand-primary);
+  border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1));}
+.dsh-teams-run-approve:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary);}
+.dsh-teams-run-approve[aria-busy="true"]{cursor:progress;opacity:.72;}
 /* 停止确认条：非模态，warning 语义（删除才是 error） */
 .dsh-teams-confirm[data-tone="warn"]{
   border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 45%,var(--dsw-alias-border-l1));
@@ -1014,7 +1049,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 面板唯一的写操作：停止当前团队。
+     * 面板的写操作之一：停止当前团队。
      *
      * 只 POST 到 `/plugins/dsh-teams/stop`，鉴权与状态根定位都在宿主路由里做；
      * 取消确认框不会调用它，所以取消不改变任何状态。任何失败都折成结果对象，
@@ -1043,6 +1078,55 @@ window.__ModuleLoader__.load({
       } catch {
         return { ok: false, retryable: true, status: 0 };
       }
+    }
+
+    /**
+     * 面板的第二个写操作：批准并启动当前团队。
+     *
+     * 只 POST 到 `/plugins/dsh-teams/approve-start`，鉴权与状态根定位都在宿主路由里做。
+     * 任何失败都折成结果对象，**绝不上抛**——面板不能因为一次批准请求而崩掉。
+     * 返回体区分「批准了」与「启动了」：`approved=true` 但 `started=false` 是真实的
+     * 部分成功（宿主没提供启动能力 / 循环已在跑），界面必须如实显示，不能假装成功。
+     *
+     * @returns {Promise<{ok:boolean, approved?:boolean, started?:boolean, reason?:string, retryable?:boolean, status?:number}>}
+     */
+    async function requestTeamApproveStart(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        return { ok: false, retryable: false, status: 400 };
+      }
+      try {
+        const response = await fetch('/plugins/dsh-teams/approve-start', {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ session: sessionId }),
+          cache: 'no-store',
+        });
+        if (response.ok !== true) {
+          const retryable = response.status >= 500 && response.status !== 503;
+          return { ok: false, retryable, status: response.status };
+        }
+        const body = await response.json();
+        return {
+          ok: true,
+          approved: body?.approved === true,
+          started: body?.started === true,
+          reason: typeof body?.reason === 'string' ? body.reason : undefined,
+        };
+      } catch {
+        return { ok: false, retryable: true, status: 0 };
+      }
+    }
+
+    /** 批准失败的文案：与停止同款分档（鉴权/路由缺失不值得重试）。 */
+    function approveFailureText(t, result) {
+      const status = result?.status;
+      if (status === 401 || status === 403) return t('approve.forbidden');
+      if (status === 404) return t('approve.noRoute');
+      if (status === 503) return t('approve.authUnavailable');
+      // 批准已落盘、只是启动失败：说「已批准，启动失败」，别说成「批准失败」——
+      // 那与磁盘事实矛盾，用户会以为没批过而重复点。
+      if (result?.approved === true) return t('approve.approvedStartFailed');
+      return t('approve.failed');
     }
 
     /** 停止失败的文案：鉴权/路由缺失是不可重试的灰字，其余按错误色提示。 */
@@ -2116,7 +2200,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 一轮运行的折叠项：头部一行（立绘牌 + 标题 + meta + 箭头 + 进度条），展开是流程图。 */
-    function RunItem({ run, t, openSession, canOpenSession, defaultOpen, busyMembers, onStop, onRefresh }) {
+    function RunItem({ run, t, openSession, canOpenSession, defaultOpen, busyMembers, onStop, onApproveStart, approvedAt, onRefresh }) {
       // 折叠时不挂载流程图：DOM 里只有头部（历史再长，挂载的卡片数 = 展开那一轮的步数）
       const [open, setOpen] = React.useState(defaultOpen === true);
       // 停止确认框：确认之前**不发任何请求**，所以取消不会改变任何状态
@@ -2124,6 +2208,11 @@ window.__ModuleLoader__.load({
       const [stopping, setStopping] = React.useState(false);
       const [stopError, setStopError] = React.useState(undefined);
       const [stopNotice, setStopNotice] = React.useState(undefined);
+      // 批准并启动：一次点击 = 批准 + 启动，失败必须显示原因（不能假装成功）
+      const [approving, setApproving] = React.useState(false);
+      const [approveError, setApproveError] = React.useState(undefined);
+      const [approveNotice, setApproveNotice] = React.useState(undefined);
+      const approveBusy = React.useRef(false);
       const stopButtonRef = React.useRef(null);
       // 停止是异步收口的定时器：卸载时清掉，避免面板关掉后还在请求
       const settleTimers = React.useRef([]);
@@ -2140,9 +2229,25 @@ window.__ModuleLoader__.load({
       const running = steps.filter((step) => step.status === 'running').length;
       const total = steps.length;
       const phase = run.phase ?? 'idle';
+      // ⚠️ 批准**故意不改 phase**（改了会让 teams_run 的闸门放行），所以"批准成功"只能从
+      // approvedAt 读出来。面板以前只认 phase，于是批准后仍显示「待审批」——这里补上。
+      const approved =
+        typeof approvedAt === 'string' && approvedAt !== '' && !Number.isNaN(Date.parse(approvedAt));
+      const phaseLabel = phase === 'staged' && approved ? t('phase.stagedApproved') : t(`phase.${phase}`);
       // 停止入口只在「正在跑的这一轮」出现：历史轮次与已收口的轮次都没有可停止的循环。
       // （快照里 current 对最新一轮恒为 true，所以还要看 phase——否则已完成的轮次也显示「停止」）
       const canStop = run.current === true && phase === 'running' && typeof onStop === 'function';
+      // 「批准并启动」只在当前这一轮 + 待审批 + 有任务图时出现。
+      // ⚠️ 已批准（approvedAt 已落盘）但循环没起来时**也要保留入口**：
+      //    否则一旦批准成功而启动失败（宿主没有可用的 Agent、或启动抛错），按钮消失、
+      //    面板只剩「已批准 · 待启动」文案，用户再没有任何启动入口，只能去敲 teams_run。
+      const canApprove =
+        run.current === true &&
+        phase === 'staged' &&
+        total > 0 &&
+        typeof onApproveStart === 'function';
+      // 已批准过：按钮语义从「批准并启动」降级为「启动」
+      const approveLabel = approved ? t('approve.start') : t('approve.button');
       // 计数：未完成任务直接从这一轮的步骤算；忙碌成员来自团队快照（缺数据就显示「—」）
       const unfinished =
         total === 0
@@ -2195,6 +2300,56 @@ window.__ModuleLoader__.load({
         setStopError({ text: stopFailureText(t, result), retryable: result?.retryable === true });
         if (result === undefined || result.retryable !== true) setConfirming(false);
       };
+      /**
+       * 点击「批准并启动」：一次请求同时批准 + 启动。
+       *
+       * 三重防重复：ref 守卫（同步，挡连点）+ aria-busy（读屏/视觉）+ 只发一次请求。
+       * 任何结果都要有可见反馈——阶段不变（批准不改 phase）时尤其不能让用户以为没生效。
+       */
+      const submitApprove = async (event) => {
+        // summary 的默认行为是折叠/展开：不截断会"点批准却把这一轮收起来"
+        event.preventDefault();
+        event.stopPropagation();
+        if (approveBusy.current) return;
+        approveBusy.current = true;
+        setApproving(true);
+        setApproveError(undefined);
+        setApproveNotice(undefined);
+        let result;
+        try {
+          result = await onApproveStart();
+        } catch {
+          result = { ok: false, retryable: true, status: 0 };
+        }
+        approveBusy.current = false;
+        setApproving(false);
+        // 提示条只在展开时可见，所以有话说就把这一轮展开（否则等于什么都没提示）
+        setOpen(true);
+        if (result !== undefined && result.ok === true) {
+          if (result.approved !== true) {
+            // 批准被拒绝（任务图为空 / 没有计划）：如实报原因，不刷新成"已批准"
+            setApproveError({ text: result.reason ?? t('approve.failed'), retryable: false });
+            return;
+          }
+          // 部分成功要分开说：批准了但没启动，不能显示成"已启动"
+          setApproveNotice(
+            result.started === true
+              ? t('approve.started')
+              : `${t('approve.approvedOnly')}${result.reason ? `：${result.reason}` : ''}`,
+          );
+          if (typeof onRefresh === 'function') {
+            onRefresh();
+            if (result.started === true) {
+              // 启动是异步收口的：补两次定向刷新，让面板在 1 秒内看到运行中
+              for (const delay of [350, 900]) {
+                settleTimers.current.push(setTimeout(() => onRefresh(), delay));
+              }
+            }
+          }
+          return;
+        }
+        setApproveError({ text: approveFailureText(t, result), retryable: result?.retryable === true });
+      };
       // 立绘牌固定用蓝色初版形象（与需求分析师卡片同一个蓝），不随运行状态变色——
       // 状态已经由边框颜色/状态胶囊表达，头像再变一次只会让"这个人是谁"变得难认。
       const accent = WHALE_BLUE;
@@ -2213,7 +2368,7 @@ window.__ModuleLoader__.load({
         },
         h(
           'summary',
-          { className: 'dsh-teams-run-head', 'data-has-stop': canStop ? 'true' : undefined },
+          { className: 'dsh-teams-run-head', 'data-has-action': canStop || canApprove ? 'true' : undefined },
           // 列①：立绘牌，全身人物站在牌底（不裁头）
           h('span', { className: 'dsh-teams-run-avatar' }, h(GirlArt, { accent, size: 34 })),
           // 列②上行：标题（单行省略，不挤压③）；下行：元信息小字
@@ -2222,7 +2377,7 @@ window.__ModuleLoader__.load({
             'span',
             { className: 'dsh-teams-run-meta' },
             h('span', null, pathLabel),
-            h('span', null, t(`phase.${phase}`)),
+            h('span', null, phaseLabel),
             timeText === '' ? null : h('span', null, timeText),
           ),
           // 列③：状态胶囊 + 完成数，整体靠右
@@ -2234,6 +2389,22 @@ window.__ModuleLoader__.load({
               : null,
             h('span', { className: 'dsh-teams-run-count' }, total > 0 ? `${done}/${total}` : '—'),
           ),
+          canApprove
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dsh-teams-btn dsh-teams-run-approve',
+                  'aria-label': `${approveLabel}：${subject}`,
+                  title: approved ? t('approve.startHint') : t('approve.button'),
+                  // 防双击：ref 守卫在 submitApprove 里同步挡连点，这里再把状态播给读屏
+                  disabled: approving,
+                  'aria-busy': approving ? 'true' : undefined,
+                  onClick: submitApprove,
+                },
+                approving ? t('approve.approving') : approveLabel,
+              )
+            : null,
           canStop
             ? h(
                 'button',
@@ -2334,6 +2505,17 @@ window.__ModuleLoader__.load({
                     stopError.text,
                   )
                 : null,
+              // 批准结果单独一条：与停止互斥显示，成功用 status、失败用 alert（读屏会主动播报）
+              approveNotice
+                ? h('div', { className: 'dsh-teams-stop-note', role: 'status' }, approveNotice)
+                : null,
+              approveError
+                ? h(
+                    'div',
+                    { className: 'dsh-teams-stop-note', 'data-tone': approveError.retryable ? 'error' : 'muted', role: 'alert' },
+                    approveError.text,
+                  )
+                : null,
               h(FlowDiagram, { run, t, openSession, canOpenSession }),
             )
           : null,
@@ -2344,7 +2526,7 @@ window.__ModuleLoader__.load({
     const RUNS_PAGE = 8;
 
     /** 运行列表：每次任务一项，最新在最上面。 */
-    function RunsView({ team, t, openSession, canOpenSession, onStop, onRefresh }) {
+    function RunsView({ team, t, openSession, canOpenSession, onStop, onApproveStart, onRefresh }) {
       const runs = Array.isArray(team.runs) ? team.runs : [];
       const [showAll, setShowAll] = React.useState(false);
       if (runs.length === 0) return h('div', { className: 'dsh-teams-empty' }, t('view.noTasks'));
@@ -2365,6 +2547,9 @@ window.__ModuleLoader__.load({
               canOpenSession,
               busyMembers,
               onStop,
+              onApproveStart,
+              // 批准只写 approvedAt、不改 phase，所以「已批准」这个事实只能从快照顶层读进来
+              approvedAt: team.approvedAt,
               onRefresh,
               // 极端数据：步骤特别多的运行默认折叠，避免一次性挂载几百张卡
               defaultOpen: index === 0 && (Array.isArray(run.steps) ? run.steps.length : 0) <= 30,
@@ -2453,8 +2638,9 @@ window.__ModuleLoader__.load({
           t,
           openSession,
           canOpenSession,
-          // 面板唯一的写操作：确认后才 POST，取消不会调用它
+          // 面板的两个写操作：停止要确认后才 POST；批准并启动一点即发（幂等）
           onStop: () => requestTeamStop(team.captainSessionId),
+          onApproveStart: () => requestTeamApproveStart(team.captainSessionId),
           onRefresh: () => store.refresh(),
         });
       } else if (tab === 'tasks') {

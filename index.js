@@ -1017,6 +1017,16 @@ function installWebSurface(ctx, config) {
           config,
           // 惰性取值：注册时这些服务可能还没就绪，请求到达时再解析
           workspaceRegistry: () => ctx.get('workspaceRegistry') ?? ctx.get('workspace'),
+          // 面板「批准并启动」：启动必须持队长**活着的 Agent**（runLoop → startActivation 的 parent）。
+          // 路由层拿不到 tool 上下文，所以在宿主这边接线：按会话来取 Agent。
+          // 取不到时如实拒绝，绝不假装已启动（否则面板显示"运行中"而实际零派发）。
+          startRun: (args) => {
+            const agent = ctx.agents?.get?.(args.captainSessionId);
+            if (agent === undefined || agent === null) {
+              return { started: false, reason: '该会话当前没有活动的 Agent，无法启动调度（请回到会话后重试）' };
+            }
+            return startTeamRun({ ...args, ctx, config, agent });
+          },
         }),
       'dsh-teams: state route',
     );

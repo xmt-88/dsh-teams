@@ -293,3 +293,15 @@ test('歧义安全词必须配语境词才算高风险（子会话 / token 预�
     assert.equal(route({ taskText: text }).score.risk, 2, `「${text}」必须判高风险`);
   }
 });
+
+test('纯数字安全关键词不许靠空词干误命中（"6 条" 不能触发 401/403）', async () => {
+  const { route } = await import('../lib/router.js');
+  // 事故：401/403 是纯数字关键词，stemEnglish 会把尾部数字剥光 → 空串；
+  // 文本里任何数字（"6 条"里的 6）剥完也是空串 → 空串命中空串，
+  // 于是「按 6 条评审意见修面板按钮」被判成安全高风险、白走完整路径。
+  assert.equal(route({ taskText: '按 6 条评审意见修面板按钮文案' }).score.risk, 0, '数字不该触发安全判定');
+  assert.equal(route({ taskText: '第 40 条、第 3 项都要改' }).score.risk, 0, '多个数字也不该触发');
+  // 真状态码仍然要判高
+  assert.equal(route({ taskText: '接口一直返回 401' }).score.risk, 2, '401 是真信号');
+  assert.equal(route({ taskText: '偶发 403 无权限' }).score.risk, 2, '403 是真信号');
+});

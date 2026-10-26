@@ -1632,7 +1632,7 @@ test('停止入口只在正在跑的当前轮出现（历史轮与已收口轮�
   const node = componentNamed(runsBox.tree, 'RunItem');
   const historical = React.mount(node.type, { ...node.props, run: { ...node.props.run, runId: 'run-old', current: false } });
   const summary = collect(historical.tree, (item) => item.type === 'summary')[0];
-  assert.equal(summary.props['data-has-stop'], undefined, '非当前轮不渲染停止入口');
+  assert.equal(summary.props['data-has-action'], undefined, '非当前轮不渲染停止入口');
   assert.equal(
     (summary.children ?? []).some((item) => String(item?.props?.className ?? '').includes('dsh-teams-run-stop')),
     false,
@@ -1645,7 +1645,7 @@ test('停止入口只在正在跑的当前轮出现（历史轮与已收口轮�
       run: { ...node.props.run, runId: `run-${phase}`, current: true, phase },
     });
     const settledSummary = collect(settled.tree, (item) => item.type === 'summary')[0];
-    assert.equal(settledSummary.props['data-has-stop'], undefined, `${phase} 轮不应有停止入口`);
+    assert.equal(settledSummary.props['data-has-action'], undefined, `${phase} 轮不应有停止入口`);
     assert.equal(
       (settledSummary.children ?? []).some((item) => String(item?.props?.className ?? '').includes('dsh-teams-run-stop')),
       false,
@@ -1665,8 +1665,8 @@ test('折叠行：三列层级（立绘｜标题+元信息｜状态与进度）�
   assert.match(source, /\.dsh-teams-run-stats\{[^}]*grid-column:3;/, '状态与进度在③列靠右');
   assert.match(
     source,
-    /\.dsh-teams-run-head\[data-has-stop="true"\]\{[^}]*grid-template-columns:34px minmax\(0,1fr\) auto auto 12px/,
-    '有停止按钮时多一列，其余轮次零位移',
+    /\.dsh-teams-run-head\[data-has-action="true"\]\{[^}]*grid-template-columns:34px minmax\(0,1fr\) auto auto 12px/,
+    '有动作按钮时多一列，其余轮次零位移',
   );
 
   const { React, workspace } = await mountTeamWorkspace();
@@ -1766,9 +1766,9 @@ test('停止：按钮在运行行标题旁，确认框显示未完成任务与�
 
   // ① 停止按钮位于折叠行（summary）里、标题旁
   const summary = collect(runBox.tree, (node) => node.type === 'summary')[0];
-  const stopButton = (summary.children ?? []).find((node) => String(node.props?.className ?? '').includes('dsh-teams-run-stop'));
+  const stopButton = (summary.children ?? []).find((node) => String(node?.props?.className ?? '').includes('dsh-teams-run-stop'));
   assert.ok(stopButton, '运行行标题旁应有停止按钮（不占输入区）');
-  assert.equal(summary.props['data-has-stop'], 'true');
+  assert.equal(summary.props['data-has-action'], 'true');
   assert.equal(stopButton.props.type, 'button', '必须是真按钮');
   assert.equal(stopButton.props['aria-label'], 'stop.button：补两个功能');
 
@@ -2679,7 +2679,7 @@ test('停止请求：确认后真实 POST 到插件路由并携带队长会话�
     const openConfirm = () => {
       const summary = collect(runBox.tree, (node) => node.type === 'summary')[0];
       const button = (summary.children ?? []).find((node) =>
-        String(node.props?.className ?? '').includes('dsh-teams-run-stop'),
+        String(node?.props?.className ?? '').includes('dsh-teams-run-stop'),
       );
       assert.ok(button, '停止按钮应在标题行');
       button.props.onClick(click);
@@ -2720,6 +2720,230 @@ test('停止请求：确认后真实 POST 到插件路由并携带队长会话�
     await openConfirm().props.onClick();
     const forbidden = collect(runBox.tree, (node) => node.props?.['data-tone'] === 'muted')[0];
     assert.equal(forbidden.children[0], 'stop.forbidden');
+  } finally {
+    if (realFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = realFetch;
+  }
+});
+
+/* ================================================================== *
+ * F. 批准并启动（面板第二个写操作）
+ *
+ * 用户实测缺陷：`teams_approve` 批准成功，面板却一直显示「待审批」——因为批准
+ * **故意不改 phase**，而面板此前只认 phase。这里锁两件事：
+ *   ① 面板按 approvedAt 显示「已批准 · 待启动」
+ *   ② 运行行标题旁有「批准并启动」，点一次就同时批准 + 启动，失败必须显示原因
+ * ================================================================== */
+
+/** 取运行行折叠头（summary）。 */
+function summaryOf(box) {
+  return collect(box.tree, (node) => node.type === 'summary')[0];
+}
+
+/** 取折叠行元信息小字里的文本（路径 / 阶段 / 时间）。 */
+function metaTexts(box) {
+  const meta = collect(box.tree, (node) => node.props?.className === 'dsh-teams-run-meta')[0];
+  return (meta?.children ?? []).map((child) => child?.children?.[0]).filter((value) => value !== undefined);
+}
+
+/** 取「批准并启动」按钮。 */
+function approveButtons(box) {
+  return collect(
+    box.tree,
+    (node) => node.type === 'button' && String(node.props?.className ?? '').includes('dsh-teams-run-approve'),
+  );
+}
+
+test('已批准 · 待启动：phase 仍是 staged，approval 只能从 approvedAt 读出来', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const stagedRun = { ...node.props.run, runId: 'run-staged', current: true, phase: 'staged' };
+
+  // ① 未批准：仍是「待审批」
+  const pending = React.mount(node.type, { ...node.props, run: stagedRun, approvedAt: undefined });
+  assert.deepEqual(metaTexts(pending), ['标准', 'phase.staged'], '未批准显示「待审批」');
+
+  // ② 已批准（phase 没变，仍是 staged）：必须显示「已批准 · 待启动」，不能再是「待审批」
+  const approvedAt = '2026-10-26T03:38:16.934Z';
+  const approved = React.mount(node.type, { ...node.props, run: stagedRun, approvedAt });
+  assert.deepEqual(metaTexts(approved), ['标准', 'phase.stagedApproved'], '批准成功后面板不能还写「待审批」');
+  assert.ok(!metaTexts(approved).includes('phase.staged'), '两者互斥，不能同时出现');
+
+  // ③ 非法/空 approvedAt 不能误报成已批准（记录损坏时保持原样）
+  for (const broken of ['', '   ', 'not-a-date', 0, null]) {
+    const box = React.mount(node.type, { ...node.props, run: stagedRun, approvedAt: broken });
+    assert.deepEqual(metaTexts(box), ['标准', 'phase.staged'], `approvedAt=${JSON.stringify(broken)} 不算已批准`);
+  }
+
+  // ④ 非 staged 阶段不受影响：批准只影响「待审批」那一行
+  for (const [phase, label] of [['running', 'phase.running'], ['done', 'phase.done'], ['failed', 'phase.failed']]) {
+    const box = React.mount(node.type, { ...node.props, run: { ...stagedRun, phase }, approvedAt });
+    assert.deepEqual(metaTexts(box), ['标准', label], `${phase} 阶段按原样显示`);
+  }
+});
+
+test('已批准 · 待启动：快照顶层的 approvedAt 经 RunsView 传到运行行（真实数据通路）', async () => {
+  // 上一条用例直接给 RunItem 递 approvedAt；这里走完整面板：team.approvedAt → RunsView → RunItem。
+  // 若 RunsView 忘了转发，用户看到的仍是「待审批」，而单测照样绿。
+  const team = {
+    ...PANEL_TEAM,
+    phase: 'staged',
+    approvedAt: '2026-10-26T03:38:16.934Z',
+    runs: [{ ...PANEL_TEAM.runs[0], phase: 'staged' }],
+  };
+  const { React, workspace } = await mountTeamWorkspace({ team });
+  const runsBox = mountRunsView(React, workspace);
+  const runBox = mountRunItem(React, runsBox);
+
+  assert.deepEqual(metaTexts(runBox), ['标准', 'phase.stagedApproved'], '批准成功后整条数据通路都要显示「已批准 · 待启动」');
+  // 已批准但还没启动：入口必须保留（否则批准成功而启动失败时，面板再无任何启动入口，
+  // 只能去敲 teams_run —— 评审 #2 的 HIGH 就是这个死路）
+  const approve = approveButtons(runBox);
+  assert.equal(approve.length, 1, '已批准未启动时仍要有启动入口');
+  // 文案降级：aria-label 与 title 都从「批准并启动」切到「启动」
+  // 测试替身的 t() 原样返回 key，所以这里断言 key
+  assert.match(String(approve[0].props['aria-label']), /^approve\.start：/, '按钮文案降级为「启动」');
+  assert.equal(approve[0].props.title, 'approve.startHint', 'title 说明"已批准，点这里启动"');
+});
+
+test('批准并启动：按钮在「当前轮 + 待审批 + 有任务图」时出现（已批准未启动则降级为「启动」），点一次完成两件事', async () => {
+  const source = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  assert.match(source, /\/plugins\/dsh-teams\/approve-start/, '应 POST 批准并启动路由');
+  assert.match(source, /method: 'POST'/, '批准并启动必须是 POST');
+  assert.match(source, /JSON\.stringify\(\{ session: sessionId \}\)/, '应把会话 id 放进请求体');
+
+  let impl = async () => ({ ok: true, approved: true, started: true });
+  const calls = [];
+  const refreshes = [];
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, {
+    onApproveStart: () => {
+      calls.push(1);
+      return impl();
+    },
+    onRefresh: () => refreshes.push(1),
+  });
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const stagedRun = { ...node.props.run, runId: 'run-staged', current: true, phase: 'staged' };
+  const mountWith = (patch) => React.mount(node.type, { ...node.props, run: stagedRun, approvedAt: undefined, ...patch });
+
+  // ① 不该出现的情况：运行中 / 收口态 / 历史轮 / 空任务图
+  //    ⚠️ 「已批准」不在此列：批准成功但启动失败时要保留「启动」入口（评审 #2 的死路）
+  const hidden = [
+    ['运行中', { run: { ...stagedRun, phase: 'running' } }],
+    ['已完成', { run: { ...stagedRun, phase: 'done' } }],
+    ['失败', { run: { ...stagedRun, phase: 'failed' } }],
+    ['历史轮', { run: { ...stagedRun, current: false } }],
+    ['空任务图', { run: { ...stagedRun, steps: [] } }],
+  ];
+  for (const [label, patch] of hidden) {
+    assert.equal(approveButtons(mountWith(patch)).length, 0, `${label} 不应有批准入口`);
+  }
+  // 已批准但未启动：入口保留，文案降级为「启动」
+  const approvedOnly = approveButtons(mountWith({ approvedAt: '2026-10-26T03:38:16.934Z' }));
+  assert.equal(approvedOnly.length, 1, '已批准未启动时保留启动入口');
+  assert.match(String(approvedOnly[0].props['aria-label']), /^approve\.start：/, '文案降级为「启动」');
+  // 运行中的那一轮仍然只有「停止」：两个动作互斥，共用同一列
+  const runningBox = mountWith({ run: { ...stagedRun, phase: 'running' } });
+  assert.ok(
+    (summaryOf(runningBox).children ?? []).some((child) => String(child?.props?.className ?? '').includes('dsh-teams-run-stop')),
+    '运行中显示「停止」，不是「批准并启动」',
+  );
+  // 既不批准也不停止的行不占动作列（其余轮次布局零位移）
+  assert.equal(summaryOf(mountWith({ run: { ...stagedRun, current: false, phase: 'done' } })).props['data-has-action'], undefined);
+
+  // ② 正常的待审批当前轮。必须**最后**挂载：fakeReact 的 redraw 槽位属于最后一次 mount，
+  //    挂早了 setState 会重绘到别的实例上（这一条踩过）。
+  const box = mountWith({});
+  const [button] = approveButtons(box);
+  assert.ok(button, '待审批的当前轮标题旁应有「批准并启动」');
+  assert.equal(button.children[0], 'approve.button');
+  assert.equal(button.props.type, 'button', '必须是真按钮');
+  assert.equal(button.props['aria-label'], 'approve.button：补两个功能', '多行可区分');
+  assert.ok((summaryOf(box).children ?? []).includes(button), '按钮在折叠行标题里，不占输入区');
+  assert.equal(summaryOf(box).props['data-has-action'], 'true', '动作位多一列');
+
+  // ③ 点一下：拦掉 summary 的折叠默认行为；请求中 aria-busy + 连点只发一次
+  const click = { preventDefault() {}, stopPropagation() {} };
+  let release;
+  impl = () => new Promise((resolve) => { release = resolve; });
+  const inflight = button.props.onClick(click);
+  const busy = approveButtons(box)[0];
+  assert.ok(busy, '请求进行中按钮要留着（改文案，不是消失）');
+  assert.equal(busy.children[0], 'approve.approving');
+  assert.equal(busy.props['aria-busy'], 'true', '读屏要知道正在处理');
+  assert.equal(busy.props.disabled, true, '进行中要禁用防重（与停止按钮同款）');
+  await busy.props.onClick(click); // 二次点击被 ref 守卫挡掉
+  assert.equal(calls.length, 1, '连点只发一次请求');
+
+  release({ ok: true, approved: true, started: true });
+  await inflight;
+  assert.equal(calls.length, 1);
+  const notice = collect(box.tree, (item) => item.props?.role === 'status')[0];
+  assert.equal(notice.children[0], 'approve.started', '成功要有可见反馈');
+  assert.ok(refreshes.length >= 1, '成功后要刷新快照（面板随轮询显示运行中）');
+
+  // ④ 部分成功：批准了但没启动 → 如实说，不能装成已启动
+  impl = async () => ({ ok: true, approved: true, started: false, reason: '宿主未提供启动能力' });
+  await approveButtons(box)[0].props.onClick(click);
+  assert.equal(
+    collect(box.tree, (item) => item.props?.role === 'status')[0].children[0],
+    'approve.approvedOnly：宿主未提供启动能力',
+  );
+
+  // ⑤ 批准被拒（任务图为空等）：显示真实原因
+  impl = async () => ({ ok: true, approved: false, started: false, reason: '任务图为空，无法批准' });
+  await approveButtons(box)[0].props.onClick(click);
+  const refused = collect(box.tree, (item) => item.props?.role === 'alert')[0];
+  assert.equal(refused.children[0], '任务图为空，无法批准', '被拒要显示原因，不能假装成功');
+
+  // ⑥ 403：不可重试的错误文案，仍然要显示出来
+  impl = async () => ({ ok: false, retryable: false, status: 403 });
+  await approveButtons(box)[0].props.onClick(click);
+  assert.equal(collect(box.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.forbidden');
+
+  // ⑦ 网络错误：可重试文案，按钮还在（用户能再点一次）
+  impl = async () => ({ ok: false, retryable: true, status: 0 });
+  await approveButtons(box)[0].props.onClick(click);
+  assert.equal(collect(box.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.failed');
+  assert.ok(approveButtons(box).length > 0, '失败后按钮要还在，允许重试');
+});
+
+test('批准并启动：真实请求打到插件路由，403/503 有专属文案', async () => {
+  const realFetch = globalThis.fetch;
+  let calls = [];
+  let fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, status: 200, json: async () => ({ approved: true, started: true }) };
+  };
+  globalThis.fetch = (...args) => fetchImpl(...args);
+  try {
+    const { React, workspace } = await mountTeamWorkspace();
+    const runsBox = mountRunsView(React, workspace);
+    const node = componentNamed(runsBox.tree, 'RunItem');
+    const box = React.mount(node.type, {
+      ...node.props,
+      run: { ...node.props.run, runId: 'run-staged', current: true, phase: 'staged' },
+      approvedAt: undefined,
+    });
+    const click = { preventDefault() {}, stopPropagation() {} };
+    // 立绘 SVG 也在渲染期走 fetch：只统计写操作，别把资源请求算进来
+    calls = [];
+
+    await approveButtons(box)[0].props.onClick(click);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/plugins/dsh-teams/approve-start');
+    assert.equal(calls[0].init.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { session: 'captain-1' }, '要带队长会话');
+
+    fetchImpl = async () => ({ ok: false, status: 503 });
+    await approveButtons(box)[0].props.onClick(click);
+    assert.equal(collect(box.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.authUnavailable');
+
+    fetchImpl = async () => ({ ok: false, status: 403 });
+    await approveButtons(box)[0].props.onClick(click);
+    assert.equal(collect(box.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.forbidden');
   } finally {
     if (realFetch === undefined) delete globalThis.fetch;
     else globalThis.fetch = realFetch;

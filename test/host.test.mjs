@@ -20,7 +20,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
-import { readTasks, stateRootOf } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf } from '../lib/state.js';
 import { isRunning } from '../lib/scheduler.js';
 
 /** 造一个最小的假 cordis 上下文：只提供插件实际使用的成员。 */
@@ -42,6 +42,13 @@ function fakeContext({ workspace }) {
       section(section) {
         sections.push(section);
         return () => {};
+      },
+    },
+    // 宿主用 ctx.agents.get(sessionId) 取活着的 Agent（面板「批准并启动」靠它接线）
+    agents: {
+      get(sessionId) {
+        const table = ctx.__agents ?? new Map();
+        return table.get(sessionId);
       },
     },
     get(key) {
@@ -140,13 +147,15 @@ test('插件注册了工具、提示段与状态路由', async () => {
       '/plugins/dsh-teams/asset',
       '/plugins/dsh-teams/state',
       '/plugins/dsh-teams/stop',
+      '/plugins/dsh-teams/approve-start',
       '/plugins/dsh-teams/roles/body',
       '/plugins/dsh-teams/roles',
     ]);
     for (const route of ctx.__routes) assert.equal(route.kind, 'exact');
     assert.ok(paths.some((path) => path.endsWith('/state')), '应有团队快照路由');
     assert.ok(paths.some((path) => path.endsWith('/asset')), '应有精灵图资源路由');
-    assert.ok(paths.some((path) => path.endsWith('/stop')), '应有停止路由（面板唯一的写操作）');
+    assert.ok(paths.some((path) => path.endsWith('/stop')), '应有停止路由（面板的写操作之一）');
+    assert.ok(paths.some((path) => path.endsWith('/approve-start')), '应有批准并启动路由');
     assert.ok(paths.some((path) => path.endsWith('/roles')), '应有角色库路由（GET/POST）');
     assert.ok(paths.some((path) => path.endsWith('/roles/body')), '应能取角色契约正文');
   });
@@ -908,5 +917,38 @@ test('运行中拒绝 teams_plan 时，decision 必须描述正在跑的那张�
       if (!isRunning(stateRoot, exec.agent.id)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
+  });
+});
+
+/* ================================================================== *
+ * 批准并启动：真实插件接线（index.js 实际注册的路由，不用测试替身）
+ * ================================================================== */
+
+test('HTTP：POST /approve-start 在真实插件接线下一次完成批准 + 启动', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    // 宿主接线时按会话取 Agent：这里放一个替身，代表"会话是活的"
+    ctx.__agents = new Map([[exec.agent.id, exec.agent]]);
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+
+    const out = await callRoute(ctx, '/plugins/dsh-teams/approve-start', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/approve-start',
+      body: { session: exec.agent.id },
+    });
+
+    assert.equal(out.status, 200);
+    assert.equal(out.body.approved, true);
+    assert.equal(
+      out.body.started,
+      true,
+      `用户点一次「批准并启动」必须真的启动；实际返回 ${JSON.stringify(out.body)}。` +
+        '（started=false 说明按钮只批准，按钮名与行为不符）',
+    );
+    const team = await readTeam(join(dir, '.dsh-teams'), exec.agent.id);
+    assert.ok(team.approvedAt, '批准必须落盘');
+    assert.notEqual(team.phase, 'staged', '启动必须让 phase 离开 staged');
+
+    await callTool(ctx, 'teams_stop', {}, exec);
   });
 });
