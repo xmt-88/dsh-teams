@@ -169,6 +169,8 @@ test('快照：按"每次任务"折叠的 runs —— 当前轮在前，每步�
     assert.equal(snapshot.runs.length, 2, '当前轮 + 一条历史');
     const current = snapshot.runs[0];
     assert.equal(current.current, true, '当前轮在最前并标记 current');
+    // 计划指纹：面板靠它区分"新的一轮计划"，重置上一轮批准按钮的乐观隐藏态
+    assert.equal(current.planId, snapshot.decidedAt, '当前轮要带 planId（= decision.decidedAt）');
     assert.equal(current.subject, '测试目标');
     assert.equal(current.steps.length, 2);
     const analyst = current.steps.find((step) => step.id === 't1');
@@ -180,6 +182,7 @@ test('快照：按"每次任务"折叠的 runs —— 当前轮在前，每步�
     const archived = snapshot.runs[1];
     assert.equal(archived.subject, '上一轮的任务', '历史轮次要保留目标');
     assert.equal(archived.current, undefined, '历史轮次不是 current');
+    assert.equal(archived.planId, undefined, '历史轮次没有当前计划指纹');
     assert.equal(archived.steps[0].role, 'executor');
 
     // 任务视图也带上用量（旧的"任务板"标签页同样受益）
@@ -934,5 +937,129 @@ test('批准并启动：启动实现抛错 → 500 且如实带原因（已批�
     assert.match(res.record.body, /agent offline/);
     // 批准先于启动完成，所以它已经落盘——面板刷新后显示「已批准 · 待启动」
     assert.ok((await readTeam(stateRoot, sessionId)).approvedAt);
+  });
+});
+
+/* ================================================================== *
+ * 记录补充要求路由（POST /plugins/dsh-teams/note）
+ *
+ * 用户需求：「不批准，再商议」写下的修改意见要落地，并在下一次派发时带给子代理。
+ * 这条路由只写 team.notes：不批准（不写 approvedAt）、不改 phase、不动在跑的任务。
+ * ================================================================== */
+
+/** 取记录补充要求的路由。 */
+function captureNoteRoute(config, connection, workspaceRegistry) {
+  const routes = captureRoutes(config, connection, workspaceRegistry);
+  const route = routes.find((item) => item.path === '/plugins/dsh-teams/note');
+  assert.ok(route, '应注册记录补充要求的路由');
+  return route;
+}
+
+test('note 路由：写入 team.notes、快照回传、且不改批准与阶段', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-note';
+    await seedTeam(stateRoot, sessionId, dir);
+    const registry = () => ({ list: () => [{ path: dir }] });
+    const route = captureNoteRoute(APPROVE_CONFIG, OK_CONNECTION, registry);
+    const stateRoute = captureRoute(APPROVE_CONFIG, OK_CONNECTION, registry);
+
+    const res = fakeResponse();
+    await route.handler(
+      fakeJsonRequest('/plugins/dsh-teams/note', { session: sessionId, text: '  按钮再大一点  ' }),
+      res,
+    );
+    assert.equal(res.record.status, 200);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.count, 1);
+    assert.ok(body.id && body.at);
+
+    const team = await readTeam(stateRoot, sessionId);
+    assert.deepEqual(team.notes.map((note) => note.text), ['按钮再大一点'], '原文 trim 后落盘');
+    assert.equal(team.approvedAt, undefined, '记录要求不等于批准');
+
+    // 面板要能看见：快照带上 notes（提交后刷新即可显示）
+    const stateRes = fakeResponse();
+    await stateRoute.handler(fakeRequest(`/plugins/dsh-teams/state?session=${sessionId}`), stateRes);
+    const snapshot = JSON.parse(stateRes.record.body).team;
+    assert.equal(snapshot.notes.length, 1);
+    assert.equal(snapshot.notes[0].text, '按钮再大一点');
+    assert.equal(snapshot.phase, team.phase, '不改阶段');
+
+    // 审计：事件流留痕
+    const events = await readEvents(stateRoot, 50);
+    assert.ok(
+      events.some((event) => event.type === 'note' && event.data?.action === 'team-note'),
+      '写入要留 event',
+    );
+  });
+});
+
+test('note 路由：空内容 → 200 ok=false + 原因，不落盘', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-note-empty';
+    await seedTeam(stateRoot, sessionId, dir);
+    const route = captureNoteRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }));
+
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/note', { session: sessionId, text: '   ' }), res);
+    assert.equal(res.record.status, 200);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.ok, false);
+    assert.match(body.reason, /不能为空/);
+    assert.equal((await readTeam(stateRoot, sessionId)).notes, undefined, '被拒时不得落盘');
+  });
+});
+
+test('note 路由：定位不到团队 → 200 ok=false（不凭空建团队）', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const route = captureNoteRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }));
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/note', { session: 'session-nobody', text: 'x' }), res);
+    assert.equal(res.record.status, 200);
+    assert.deepEqual(JSON.parse(res.record.body), { ok: false, reason: '当前会话还没有团队' });
+  });
+});
+
+test('note 路由：400（坏 JSON / 缺 session）与 405（非 POST）', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const route = captureNoteRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }));
+
+    const badJson = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/note', '{not json'), badJson);
+    assert.equal(badJson.record.status, 400);
+    assert.match(badJson.record.body, /invalid json body/);
+
+    for (const body of [{}, { session: '' }, { session: '   ' }, { session: 42 }]) {
+      const missing = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/note', body), missing);
+      assert.equal(missing.record.status, 400, `缺 session 应 400：${JSON.stringify(body)}`);
+      assert.match(missing.record.body, /missing session parameter/);
+    }
+
+    const get = fakeResponse();
+    await route.handler(fakeRequest('/plugins/dsh-teams/note', 'GET'), get);
+    assert.equal(get.record.status, 405);
+  });
+});
+
+test('note 路由：鉴权与读路由同款（503/401/403），被拒时绝不写盘', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-note-gate';
+    await seedTeam(stateRoot, sessionId, dir);
+
+    const gates = [
+      [() => undefined, 503, /authentication unavailable/],
+      [() => ({ requestRejection: () => 401 }), 401, /unauthorized/],
+      [() => ({ requestRejection: () => 403 }), 403, /forbidden/],
+    ];
+    for (const [connection, status, pattern] of gates) {
+      const route = captureNoteRoute(APPROVE_CONFIG, connection, () => ({ list: () => [{ path: dir }] }));
+      const res = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/note', { session: sessionId, text: '被拒的请求' }), res);
+      assert.equal(res.record.status, status, `应返回 ${status}`);
+      assert.match(res.record.body, pattern);
+    }
+    assert.equal((await readTeam(stateRoot, sessionId)).notes, undefined, '被拒请求不得写盘');
   });
 });

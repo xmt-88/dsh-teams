@@ -18,7 +18,7 @@ import { rm } from 'node:fs/promises';
 import { route } from './lib/router.js';
 import { readField } from './lib/config.js';
 import { loadRoles, resolveRole, validateCustomRole, PERMISSION_TIERS, TIMEOUT_TIERS } from './lib/roles.js';
-import { stateRootOf, ensureTeam, readTeam, readTasks, mutateTeam, appendEvent, ensureStateDirs, userRolesDir } from './lib/state.js';
+import { stateRootOf, ensureTeam, readTeam, readTasks, mutateTeam, appendEvent, ensureStateDirs, userRolesDir, appendTeamNote } from './lib/state.js';
 import { writeFileAtomic } from './lib/state.js';
 import { authenticatedWebRoutes, registerStateRoutes } from './lib/web-routes.js';
 import { planTeam, approveTeam, startTeamRun, retryFailedTeam, stopRun, isRunning } from './lib/scheduler.js';
@@ -403,6 +403,7 @@ function registerTools(ctx, config) {
             needs_decision: { type: 'boolean' },
             next_tasks: { type: 'array', items: { type: 'string' } },
             role_chain: { type: 'array', items: { type: 'string' } },
+            notes_count: { type: 'integer' },
           },
         },
         render: (_args, value) =>
@@ -412,6 +413,10 @@ function registerTools(ctx, config) {
                   value.path_label ? `　路径：${value.path_label}` : ''
                 }${value.tasks_total ? `　任务 ${value.tasks_done}/${value.tasks_total} 完成` : ''}${
                   value.needs_decision === true ? '　⚠️ 需队长决策（返工预算耗尽，可续跑）' : ''
+                }${
+                  Number.isInteger(value.notes_count) && value.notes_count > 0
+                    ? `　补充要求 ${value.notes_count} 条（之后每次派发都会带进任务卡）`
+                    : ''
                 }${value.running ? '　（调度中）' : ''}`
               : '当前会话还没有团队',
           ),
@@ -437,6 +442,9 @@ function registerTools(ctx, config) {
           tasks_blocked: stats.blocked,
           // 「返工预算耗尽」不是失败：单独标出来，让模型/用户知道该拍板而不是修复
           needs_decision: stats.needsDecision > 0,
+          // 已记录的补充要求条数。注意：派发**没有消费水位**——每次派发都会带上全部
+          // notes，所以这个数不会因派发而减少，文案不能说成「待应用」。
+          notes_count: Array.isArray(team.notes) ? team.notes.length : 0,
           ...(decision === undefined
             ? {}
             : {
@@ -988,6 +996,61 @@ function registerTools(ctx, config) {
       },
     }),
   );
+
+  /* ---------------------------------------------------------------- *
+   * 11) teams_note — 记录用户中途补充的要求
+   * ---------------------------------------------------------------- */
+  //
+  // 用户实测需求：跑到一半改需求（"按钮再大一点""这次别动 X"）没有入口，
+  // 只能重新 plan 或等下一轮。这条要求写进 `team.notes[]`，由 `dispatchOne` 派发时
+  // 随任务卡下发（`buildTaskPrompt` 的「用户中途补充的要求」节）。
+  // 只写团队记录：已完成 / 在跑的任务不受影响（它们已经带着旧任务卡派发出去了）。
+  ctx.tools.register(
+    defineTool({
+      name: 'teams_note',
+      description:
+        '把用户中途补充的要求写进团队记录；之后每次派发任务时都会随任务卡带给子代理（已完成或在跑的任务不受影响）。用户改需求、加约束、纠正方向时用它，不必重新生成任务图。',
+      parameters: {
+        note: { type: 'string', required: true, description: '用户补充的要求（原文或整理后的要点，≤2000 字）' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            count: { type: 'integer' },
+            id: { type: 'string' },
+            at: { type: 'string' },
+            reason: { type: 'string' },
+          },
+        },
+        render: (_args, value) =>
+          renderText(
+            value.ok
+              ? `已记录补充要求（共 ${value.count ?? 0} 条）：之后每次派发都会带给子代理`
+              : `未记录：${value.reason ?? ''}`,
+          ),
+      },
+      async execute(args, exec) {
+        const { captainSessionId, workspace } = captainOf(exec);
+        const stateRoot = stateRootOf(workspace, readField(config?.stateDir, '.dsh-teams'));
+        const result = await appendTeamNote(stateRoot, captainSessionId, {
+          text: args.note,
+          sessionId: captainSessionId,
+        });
+        if (result.ok !== true) return { ok: false, reason: result.reason ?? '记录失败' };
+        // 审计：写事件失败不能把已经落盘的要求变成失败
+        await appendEvent({
+          stateRoot,
+          type: 'note',
+          team: captainSessionId,
+          data: { action: 'team-note', count: result.count, noteId: result.id, source: 'tool' },
+        }).catch(() => {});
+        return { ok: true, count: result.count, id: result.id, at: result.at };
+      },
+    }),
+  );
 }
 
 /**
@@ -999,11 +1062,12 @@ function registerTools(ctx, config) {
 function usageSectionText() {
   return [
     '## 团队流水线（dsh-teams）',
-    '工具：`teams_route` 决策路径；`teams_plan` 生成任务图；`teams_approve` 批准；`teams_run` 启动；`teams_status` 看进度；`teams_stop` 停止；`teams_retry` 从失败处续跑；`teams_roles` 查角色；`teams_role_save` 新建/覆盖自定义角色；`teams_role_manage` 启停或删除角色。',
+    '工具：`teams_route` 决策路径；`teams_plan` 生成任务图；`teams_approve` 批准；`teams_run` 启动；`teams_status` 看进度；`teams_stop` 停止；`teams_retry` 从失败处续跑；`teams_note` 记录用户中途补充的要求；`teams_roles` 查角色；`teams_role_save` 新建/覆盖自定义角色；`teams_role_manage` 启停或删除角色。',
     '用户也可直接用斜杠命令：`/teams-plan <目标>`、`/teams-status`、`/teams-approve`、`/teams-run`、`/teams-retry`、`/teams-stop`、`/teams-roles`。',
     '标准流程：`teams_route` 定路径 → `teams_plan` 生成任务图 → **把任务图给用户确认** → `teams_approve` → `teams_run`。',
     '闸门是硬的：未调用 `teams_approve` 前 `teams_run` 会拒绝执行，不要绕过用户确认。',
     '`teams_run` 立即返回并在后台跑，用 `teams_status` 或团队视图看进度，不要反复轮询。',
+    '用户中途改需求 / 加约束用 `teams_note` 记录：之后每次派发都会随任务卡带给子代理（派发不消费，不要以为下发一次就失效），不要重新生成任务图。',
     '不要用：单纯问答、信息查询、读文件解释、单行改动、以及用户已明确指定做法时——这些直接做即可。',
     '路径含义：快速=小改直接实现并审查；标准=先需求后架构再实现；完整=多一轮批判与安全审查；调试=先定位根因再修；部署=备份与回滚优先并独立验证。',
     '涉及认证、支付、凭据、数据安全的改动不要降级路径。',

@@ -85,3 +85,63 @@ test('主题令牌只出现在 var() 中，没有拼错的近义名', async () =
   const suspects = [...code.matchAll(/--dsw-a-z]([a-z0-9-]*)/g)].map((m) => m[0]);
   assert.deepEqual(suspects, [], `疑似拼错的令牌前缀：${suspects.join(', ')}`);
 });
+
+/** 取出某个选择器（精确匹配，不含 :hover/:focus-visible）所在规则的声明串。 */
+function ruleBodies(sheet, selector) {
+  const bodies = [];
+  for (const match of sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1].split(',').map((item) => item.trim());
+    if (selectors.includes(selector)) bodies.push(match[2]);
+  }
+  return bodies.join(';');
+}
+
+/** 读一条声明；没有这条声明时返回 undefined（用于区分「透明/描边」与「被填充」）。 */
+function declaration(body, property) {
+  const match = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`).exec(body);
+  return match ? match[1].trim() : undefined;
+}
+
+test('审批区按钮：主按钮品牌实心、次按钮描边，且尺寸够大够醒目', async () => {
+  const code = await readFile(join(PACKAGE_DIR, 'client.js'), 'utf8');
+  const css = /const CSS = `([\s\S]*?)`;/.exec(code);
+  assert.ok(css, '应能找到 CSS 常量');
+  const sheet = css[1];
+
+  const primary = ruleBodies(sheet, '.dsh-teams-approval-primary');
+  const secondary = ruleBodies(sheet, '.dsh-teams-approval-secondary');
+  assert.ok(primary, '「批准并启动」必须有样式规则');
+  assert.ok(secondary, '「不批准，再商议」必须有样式规则');
+
+  // 用户要求「做大」：高 ≥32px、字号 13px、圆角 10px，两个按钮同高同尺寸
+  for (const [label, body] of [
+    ['主按钮「批准并启动」', primary],
+    ['次按钮「不批准，再商议」', secondary],
+  ]) {
+    const height = Number.parseFloat(declaration(body, 'min-height') ?? '0');
+    assert.ok(height >= 32, `${label}高度应 ≥32px，实际 ${declaration(body, 'min-height')}`);
+    assert.equal(declaration(body, 'font-size'), '13px', `${label}字号应为 13px`);
+    assert.equal(declaration(body, 'border-radius'), '10px', `${label}圆角应为 10px`);
+  }
+  // 用户要求「占满整行」：flex-grow 为 1，两个按钮分摊整行宽度
+  assert.match(declaration(primary, 'flex') ?? '', /^1\s+1\b/, '主按钮应可伸展占满整行');
+  assert.match(declaration(secondary, 'flex') ?? '', /^1\s+1\b/, '次按钮应可伸展占满整行');
+
+  // 用户要求「实心大按钮」+「描边次要按钮」：主按钮有品牌色背景，次按钮没有填充
+  assert.match(
+    declaration(primary, 'background') ?? '',
+    /var\(--dsw-alias-brand-primary\)/,
+    '主按钮应是品牌色实心',
+  );
+  assert.match(
+    declaration(primary, 'color') ?? '',
+    /var\(--dsw-alias-bg-base\)/,
+    '实心按钮的文字要用底色保证对比度',
+  );
+  assert.equal(declaration(secondary, 'background'), undefined, '次按钮必须是描边，不能有实心背景');
+  assert.match(
+    declaration(secondary, 'border-color') ?? '',
+    /var\(--dsw-alias-border-l2\)/,
+    '次按钮要靠描边表达次要层级',
+  );
+});

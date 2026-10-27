@@ -20,7 +20,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
-import { readTasks, readTeam, stateRootOf, writeTasks } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, writeTasks, NOTE_MAX_CHARS } from '../lib/state.js';
 import { isRunning } from '../lib/scheduler.js';
 
 /** 造一个最小的假 cordis 上下文：只提供插件实际使用的成员。 */
@@ -126,6 +126,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
     const names = [...ctx.__tools.keys()].sort();
     assert.deepEqual(names, [
       'teams_approve',
+      'teams_note',
       'teams_plan',
       'teams_retry',
       'teams_role_manage',
@@ -141,6 +142,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
     assert.equal(ctx.__sections[0].name, 'dsh-teams');
     assert.ok(ctx.__sections[0].text.includes('teams_route'), '提示段应提到工具名');
     assert.ok(ctx.__sections[0].text.includes('teams_approve'), '提示段应说明审批闸门');
+    assert.ok(ctx.__sections[0].text.includes('teams_note'), '提示段应说明补充要求怎么记');
 
     const paths = ctx.__routes.map((route) => String(route.path));
     assert.deepEqual(paths, [
@@ -148,6 +150,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
       '/plugins/dsh-teams/state',
       '/plugins/dsh-teams/stop',
       '/plugins/dsh-teams/approve-start',
+      '/plugins/dsh-teams/note',
       '/plugins/dsh-teams/roles/body',
       '/plugins/dsh-teams/roles',
     ]);
@@ -156,6 +159,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
     assert.ok(paths.some((path) => path.endsWith('/asset')), '应有精灵图资源路由');
     assert.ok(paths.some((path) => path.endsWith('/stop')), '应有停止路由（面板的写操作之一）');
     assert.ok(paths.some((path) => path.endsWith('/approve-start')), '应有批准并启动路由');
+    assert.ok(paths.some((path) => path.endsWith('/note')), '应有记录补充要求的路由');
     assert.ok(paths.some((path) => path.endsWith('/roles')), '应有角色库路由（GET/POST）');
     assert.ok(paths.some((path) => path.endsWith('/roles/body')), '应能取角色契约正文');
   });
@@ -226,6 +230,55 @@ test('teams_status 在无团队时如实返回 has_team=false，而不是报错'
     const status = await callTool(ctx, 'teams_status', {}, fakeExec(dir));
     assert.equal(status.has_team, false);
     assert.ok(status.state_dir.includes('.dsh-teams'));
+  });
+});
+
+test('teams_note：补充要求写进团队记录，teams_status 显示已记录条数', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    await callTool(ctx, 'teams_route', { task: '补两个功能' }, exec);
+
+    const first = await callTool(ctx, 'teams_note', { note: '审批按钮做在流程图下面' }, exec);
+    assert.equal(first.ok, true);
+    assert.equal(first.count, 1);
+    assert.ok(typeof first.id === 'string' && first.id !== '');
+    assert.ok(typeof first.at === 'string' && first.at !== '');
+
+    const second = await callTool(ctx, 'teams_note', { note: '  Windows 用 win_bash  ' }, exec);
+    assert.equal(second.count, 2, '第二次追加而不是覆盖');
+
+    // 落盘位置：team.json 的 notes[]（派发时 dispatchOne 读的就是它）
+    const raw = JSON.parse(await readFile(join(dir, '.dsh-teams', 'teams', 'session-test-1.json'), 'utf8'));
+    assert.deepEqual(
+      raw.notes.map((note) => note.text),
+      ['审批按钮做在流程图下面', 'Windows 用 win_bash'],
+      '原文去首尾空白后按时间序保存',
+    );
+    assert.ok(
+      raw.notes.every((note) => typeof note.id === 'string' && typeof note.at === 'string'),
+      '每条要有 id 与时间',
+    );
+
+    const status = await callTool(ctx, 'teams_status', {}, exec);
+    assert.equal(status.notes_count, 2, 'teams_status 要显示已记录条数（派发不消费，计数不回落）');
+
+    // 空 / 超长：拒绝且不落盘（重试同一个请求不会变好）
+    const empty = await callTool(ctx, 'teams_note', { note: '   ' }, exec);
+    assert.equal(empty.ok, false);
+    assert.match(empty.reason, /不能为空/);
+    const tooLong = await callTool(ctx, 'teams_note', { note: 'x'.repeat(NOTE_MAX_CHARS + 1) }, exec);
+    assert.equal(tooLong.ok, false);
+    assert.match(tooLong.reason, /上限/);
+    const after = await callTool(ctx, 'teams_status', {}, exec);
+    assert.equal(after.notes_count, 2, '被拒的条目不能计入');
+  });
+});
+
+test('teams_note：没有团队时如实回 ok=false，不凭空建团队', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const result = await callTool(ctx, 'teams_note', { note: '随便说点什么' }, fakeExec(dir));
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /还没有团队/);
   });
 });
 

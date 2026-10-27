@@ -31,7 +31,7 @@ import {
 } from '../lib/tasks.js';
 import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure, extractFindings } from '../lib/scheduler.js';
 import { buildPersona, buildTaskPrompt, extractOutput, describeStopReason, resolveChildDelegationDepth, resolveTimeoutMs, TIMEOUT_MS } from '../lib/runner.js';
-import { readTasks, readTeam, stateRootOf, mutateTasks } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, mutateTasks, appendTeamNote } from '../lib/state.js';
 import { PATH_TEMPLATES } from '../lib/router.js';
 
 /** 默认配置（与插件 Config 默认值一致）。 */
@@ -456,6 +456,41 @@ test('调度：按依赖顺序跑完快速路径，任务全部完成', async ()
     assert.ok(reviewCall, '代码审查任务应被派发');
     const reviewText = reviewCall.prompt[0].text;
     assert.ok(reviewText.includes('上游产出'), '下游任务卡应包含上游产出小节');
+  });
+});
+
+test('补充要求：下一次派发随任务卡下发给子代理（每个任务都带）', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents();
+    const ctx = fakeCtx(fake);
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 'session-1', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    // 用户在派发前补充了要求：它必须随任务卡走下去，而不是只躺在 team.json 里
+    const noted = await appendTeamNote(stateRoot, 'session-1', { text: 'Windows 上请用 win_bash' });
+    assert.equal(noted.ok, true);
+
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-1'), 8000);
+
+    assert.ok(fake.calls.length >= 1, '应有派发');
+    for (const call of fake.calls) {
+      const text = call.prompt[0].text;
+      assert.ok(text.includes('用户中途补充的要求'), '每张任务卡都要带补充要求小节');
+      assert.ok(text.includes('Windows 上请用 win_bash'), '原文要带进任务卡');
+      // 固定环境说明走的是默认 platform=process.platform：这条断言覆盖「派发 → runTask →
+      // buildTaskPrompt」的真实路径，而不是只直接调 buildTaskPrompt（用户的原问题就在这里）
+      assert.equal(
+        text.includes('运行环境与工具（固定）'),
+        process.platform === 'win32',
+        'Windows 派发时任务卡必须带固定环境说明，非 Windows 不带',
+      );
+      if (process.platform === 'win32') {
+        assert.ok(text.includes('不要用 `bash`'), 'Windows 上要明确禁用 bash 配 /f/ 路径');
+      }
+    }
   });
 });
 
@@ -1286,6 +1321,62 @@ test('运行器：persona 用角色契约 + 角色专属预算', () => {
   assert.ok(persona.includes('最多 9 个文件'), '应写入读取预算');
   assert.ok(persona.includes('800 字以内'), '应写入输出预算');
   assert.ok(persona.includes('未确认项'), '应强调不确定项纪律');
+});
+
+test('运行器：任务卡在 Windows 上写明用 win_bash、不要用 bash 配 /f/ 路径', () => {
+  const task = { id: 't-exec', role: 'executor', roleName: '开发执行者' };
+  const win = buildTaskPrompt({ task, platform: 'win32' });
+  assert.ok(win.includes('运行环境与工具（固定）'), 'Windows 上要有固定环境节');
+  assert.ok(win.includes('win_bash'), '要说清用 win_bash');
+  assert.ok(win.includes('不要用 `bash`'), '要明确禁用 bash');
+  assert.ok(win.includes('F:\\MT'), 'Windows 路径写法要给出示范');
+  assert.ok(win.includes('/f/MT'), '要指出 /f/ 写法在本机是错的');
+  assert.ok(win.includes('Set-Location'), '要附上实测报错，才知道这不是随便写的');
+  assert.ok(win.includes('pwsh'), '要说清 pwsh 什么时候用');
+  assert.ok(win.includes('`read`') && win.includes('`glob`'), '读文件/找文件用 read 与 glob/grep');
+
+  // 非 Windows 不下发这套说明：否则子代理会以为本机命令名也是 win_bash
+  const posix = buildTaskPrompt({ task, platform: 'darwin' });
+  assert.ok(!posix.includes('win_bash'), '非 Windows 不应提 win_bash');
+  assert.ok(!posix.includes('运行环境与工具（固定）'), '非 Windows 不出环境节');
+});
+
+test('运行器：任务卡带上用户中途补充的要求（按时间序，最新在后）', () => {
+  const task = { id: 't-exec', role: 'executor' };
+  const base = buildTaskPrompt({ task, platform: 'linux' });
+  assert.ok(!base.includes('用户中途补充的要求'), '没有补充要求时不出这一节');
+
+  const prompt = buildTaskPrompt({
+    task,
+    platform: 'linux',
+    notes: [
+      { id: 'n1', text: '按钮做大一点', at: '2026-10-26T01:00:00.000Z' },
+      { id: 'n2', text: '这次别动 lib/scheduler.js', at: '2026-10-26T02:00:00.000Z' },
+    ],
+  });
+  assert.ok(prompt.includes('用户中途补充的要求'), '有补充要求时要出小节');
+  assert.ok(prompt.includes('优先于上面的原始描述'), '要说明优先级');
+  assert.ok(
+    prompt.indexOf('按钮做大一点') < prompt.indexOf('这次别动 lib/scheduler.js'),
+    '按时间序，最新在后',
+  );
+
+  // 空/纯空白条目跳过，不留空行噪声
+  const sparse = buildTaskPrompt({
+    task,
+    platform: 'linux',
+    notes: [{ id: 'x', text: '   ' }, { id: 'y', text: '只留这条' }],
+  });
+  assert.equal((sparse.match(/只留这条/g) ?? []).length, 1, '只渲染一次');
+});
+
+test('运行器：补充要求超出预算时保留最新的，并写明较早几条未展开', () => {
+  const big = 'x'.repeat(3000);
+  const notes = [0, 1, 2].map((index) => ({ id: `n${index}`, text: `条目${index}-${big}` }));
+  const prompt = buildTaskPrompt({ task: { id: 't', role: 'executor' }, platform: 'linux', notes });
+  assert.ok(prompt.includes('条目2'), '最新一条必须保留');
+  assert.ok(!prompt.includes('条目0'), '最早的应被省略');
+  assert.match(prompt, /较早 2 条未展开/, '省略了几条要写清楚，不能静默丢');
 });
 
 test('运行器：任务卡包含目标、验收标准、范围与上游产出', () => {
