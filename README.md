@@ -123,7 +123,9 @@ test-engineer  verifier  devops  deploy-auditor  explore  document-specialist
 
 > 契约里写"读到第 6 个文件就停"，比写"请谨慎高效"有用得多。
 
-自定义角色支持**触发词**：任务描述命中时自动插进流水线（例如给 `db-tuning` 配 `索引/慢查询`）。
+**权限档（readonly / readwrite / execute）不是运行时沙箱。** 宿主的工具作用域（`toolFilter`）只经 agentPreset / descriptor 通路生效，一次性派发拿不到，所以档位对子代理而言**只是提示词约束**：它写在契约与角色元数据里，运行期不会被强制执行。越界靠**事后检测**——子代理结束后扫描它自己的会话事件，发现 `write` / `edit` / `bash` / `pwsh` 这类写操作时，把 `permissionViolation` 记进该任务的 evidence，并往事件流追加一条 `warn`（团队面板可见），不改变任务状态、不冒充失败。审计后如实改掉过去"工具作用域按角色裁剪"的说法。
+
+自定义角色支持**触发词**：任务描述命中时自动插进流水线（例如给 `db-tuning` 配 `索引/慢查询`）。匹配按**词边界**：`ui` 不会因为 `build` 而命中、`go` 不会因为 `google` 而命中，中文仍按子串匹配。
 
 ---
 

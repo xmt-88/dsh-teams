@@ -29,9 +29,10 @@ import {
   DEP_OUTPUT_LIMIT,
   DEP_TOTAL_LIMIT,
 } from '../lib/tasks.js';
-import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure, extractFindings } from '../lib/scheduler.js';
+import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure, extractFindings, stopRun } from '../lib/scheduler.js';
 import { buildPersona, buildTaskPrompt, extractOutput, describeStopReason, resolveChildDelegationDepth, resolveTimeoutMs, TIMEOUT_MS } from '../lib/runner.js';
-import { readTasks, readTeam, stateRootOf, mutateTasks, appendTeamNote } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, mutateTasks, appendTeamNote, readEvents } from '../lib/state.js';
+import { buildSnapshot } from '../lib/web-routes.js';
 import { PATH_TEMPLATES } from '../lib/router.js';
 
 /** 默认配置（与插件 Config 默认值一致）。 */
@@ -418,6 +419,353 @@ test('闸门：批准后才允许派发', async () => {
     const started = await startTeamRun(base);
     assert.equal(started.started, true);
     assert.ok(started.tasks > 0);
+  });
+});
+
+test('启动前置校验：缺活 Agent 时如实失败（reasonCode=no-agent），且不占锁、不写 phase、不派发', async () => {
+  await withWorkspace(async (dir) => {
+    const ctx = fakeCtx(fakeSubagents());
+    const captainSessionId = 'session-no-agent';
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId, workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const phaseBefore = (await readTeam(stateRoot, captainSessionId)).phase;
+
+    for (const agent of [undefined, null, { id: '' }]) {
+      const result = await startTeamRun({ ctx, config: CONFIG, agent, captainSessionId, workspace: dir });
+      assert.equal(result.started, false, '缺活 Agent 绝不能回 started:true（面板会显示"运行中"却零派发）');
+      assert.equal(result.reasonCode, 'no-agent', '失败原因必须机器可读，面板/命令据此定位而不是靠推测');
+      assert.match(result.reason, /没有活动的 Agent/);
+      assert.equal(isRunning(stateRoot, captainSessionId), false, '缺 Agent 时不得占锁');
+      assert.equal(
+        (await readTeam(stateRoot, captainSessionId)).phase,
+        phaseBefore,
+        '缺 Agent 时不得先写 phase=running（这正是真机「启动失败/命令不派发」的症状）',
+      );
+    }
+
+    // 守卫必须在占锁之前：前面三次失败若留下锁，这里会报「调度循环已在运行中」
+    const ok = await startTeamRun(base);
+    assert.equal(ok.started, true, '前置校验失败不得留下锁，否则同会话永远无法再启动');
+    await waitFor(async () => !isRunning(stateRoot, captainSessionId), 20000);
+  });
+});
+
+/* ================================================================== *
+ * 只读档越界检测（检测，不是限制）
+ * ================================================================== */
+
+/** 把任务图改写成单个只读档任务：architect 的 permissions 是 readonly。 */
+async function rewriteAsReadonlyTask(stateRoot, sessionId, dir, evidence) {
+  await mutateTasks(stateRoot, sessionId, (current) => ({
+    ...current,
+    seq: (current.seq ?? 1) + 1,
+    tasks: [
+      {
+        id: 't-arch',
+        subject: '出方案',
+        role: 'architect',
+        roleName: '架构师',
+        kind: 'work',
+        status: 'pending',
+        deps: [],
+        order: 1,
+        workspace: dir,
+        ...(evidence === undefined ? {} : { evidence }),
+      },
+    ],
+  }));
+}
+
+test('只读档越界检测：子代理调了写工具 → evidence 记 permissionViolation + 一条 warn 事件，状态不变', async () => {
+  await withWorkspace(async (dir) => {
+    const child = {
+      status: 'idle',
+      session: {
+        get seq() {
+          return 5;
+        },
+        ownEvents: () => [
+          { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', toolName: 'write' }] } } },
+          { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+        ],
+      },
+    };
+    const ctx = fakeCtx(fakeSubagents({ child }));
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 'session-ro', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await rewriteAsReadonlyTask(stateRoot, 'session-ro', dir);
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-ro'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-ro')).tasks.find((item) => item.id === 't-arch');
+    assert.equal(task.status, 'done', '越界只留档，不改任务状态');
+    const runEvidence = task.evidence.find((entry) => entry.kind === 'run');
+    assert.deepEqual(runEvidence.permissionViolation, ['write'], 'evidence 必须记下越界的写工具');
+
+    const warnings = (await readEvents(stateRoot, 50)).filter(
+      (event) => event.data?.level === 'warn' && event.data?.task === 't-arch',
+    );
+    assert.equal(warnings.length, 1, '必须追加一条 warn 事件（面板可见）');
+    assert.match(String(warnings[0].data.message), /只读档/);
+    assert.deepEqual(warnings[0].data.permissionViolation, ['write']);
+  });
+});
+
+test('只读档越界检测：只调了读工具 → 不记越界、不发 warn（不误报）', async () => {
+  await withWorkspace(async (dir) => {
+    const child = {
+      status: 'idle',
+      session: {
+        get seq() {
+          return 5;
+        },
+        ownEvents: () => [
+          {
+            type: 'assistant/message',
+            data: { message: { content: [{ type: 'tool-call', toolName: 'read' }, { type: 'tool-call', toolName: 'grep' }] } },
+          },
+          { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+        ],
+      },
+    };
+    const ctx = fakeCtx(fakeSubagents({ child }));
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 'session-ro-ok', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await rewriteAsReadonlyTask(stateRoot, 'session-ro-ok', dir);
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-ro-ok'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-ro-ok')).tasks.find((item) => item.id === 't-arch');
+    assert.equal(task.evidence.some((entry) => entry.permissionViolation !== undefined), false, '读操作不得被记成越界');
+    const warnings = (await readEvents(stateRoot, 50)).filter(
+      (event) => event.data?.level === 'warn' && event.data?.task === 't-arch',
+    );
+    assert.equal(warnings.length, 0, '没有越界就不该有 warn');
+  });
+});
+
+test('只读档越界检测：重试路径也要留证（失败待重试 ≠ 没发生过）', async () => {
+  await withWorkspace(async (dir) => {
+    const child = () => ({
+      status: 'idle',
+      session: {
+        get seq() {
+          return 5;
+        },
+        ownEvents: () => [
+          { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', toolName: 'edit' }] } } },
+        ],
+      },
+    });
+    // 两次都瞬态失败：第 1 次走"退避后重试"分支（不调 settleTask），第 2 次才进失败收口
+    const fake = fakeSubagents({ child, reply: () => ({ ok: false, stopReason: 'error' }) });
+    const ctx = fakeCtx(fake);
+    const config = { ...CONFIG, scheduler: { ...CONFIG.scheduler, maxRetries: 1 } };
+    const base = { ctx, config, agent: FAKE_AGENT, captainSessionId: 'session-ro-retry', workspace: dir };
+    const stateRoot = stateRootOf(dir, config.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await rewriteAsReadonlyTask(stateRoot, 'session-ro-retry', dir);
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-ro-retry'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-ro-retry')).tasks.find((item) => item.id === 't-arch');
+    assert.equal(task.status, 'failed');
+    const violations = task.evidence.filter((entry) => entry.permissionViolation !== undefined);
+    assert.equal(violations.length, 2, '两次尝试各留一条：重试不能把上一轮的越界吞掉');
+    assert.deepEqual(
+      violations.map((entry) => String(entry.childId)).sort(),
+      ['child-1', 'child-2'],
+      '每条越界必须挂在它自己那次运行上',
+    );
+    assert.equal(violations.filter((entry) => entry.kind === 'permission-violation').length, 1, '待重试那轮没有 run 证据，补独立记录');
+    const warnings = (await readEvents(stateRoot, 50)).filter(
+      (event) => event.data?.level === 'warn' && event.data?.task === 't-arch',
+    );
+    assert.equal(warnings.length, 2, '每次越界都要有一条 warn 事件');
+  });
+});
+
+test('只读档越界检测：用户停止路径也要留证（stopped 不是"没发生"）', async () => {
+  await withWorkspace(async (dir) => {
+    let seq = 0;
+    const child = {
+      status: 'running',
+      session: {
+        // 游标一直推进：看门狗不会判停滞，收口只能来自"用户停止"
+        get seq() {
+          seq += 1;
+          return seq;
+        },
+        ownEvents: () => [
+          { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', toolName: 'bash' }] } } },
+        ],
+      },
+      cancel: () => {},
+    };
+    const fake = fakeSubagents({ child, reply: () => ({ ok: false, hold: true }) });
+    const ctx = fakeCtx(fake);
+    const config = {
+      ...CONFIG,
+      timeouts: { enabled: false },
+      watch: { probeMs: 20, idleGraceMs: 20, silenceLimitMs: 60_000, stallFloorMs: 60_000, stallFactor: 2 },
+    };
+    const base = { ctx, config, agent: FAKE_AGENT, captainSessionId: 'session-ro-stop', workspace: dir };
+    const stateRoot = stateRootOf(dir, config.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    // 先摆一条上一轮的运行证据：停止路径追加的越界留档排在它后面，
+    // 面板取"最近一次运行"时不能因此把耗时读丢
+    await rewriteAsReadonlyTask(stateRoot, 'session-ro-stop', dir, [
+      { kind: 'run', at: '2026-01-01T00:00:00.000Z', childId: 'child-prev', durationMs: 1234 },
+    ]);
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(
+      async () => (await readTasks(stateRoot, 'session-ro-stop')).tasks.some((item) => item.status === 'running'),
+      8000,
+    );
+
+    assert.equal(stopRun(stateRoot, 'session-ro-stop'), true);
+    await waitFor(async () => !isRunning(stateRoot, 'session-ro-stop'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-ro-stop')).tasks.find((item) => item.id === 't-arch');
+    assert.equal(task.status, 'pending', '停止不判失败（否则"停止 → 续跑"断掉）');
+    assert.equal(task.attempts.at(-1).status, 'stopped');
+    const violation = task.evidence.find((entry) => entry.permissionViolation !== undefined);
+    assert.ok(violation !== undefined, '停止路径必须留下越界证据（复核发现的静默丢失）');
+    assert.deepEqual(violation.permissionViolation, ['bash']);
+    const warnings = (await readEvents(stateRoot, 50)).filter(
+      (event) => event.data?.level === 'warn' && event.data?.task === 't-arch',
+    );
+    assert.equal(warnings.length, 1, '停止路径也要有 warn 事件（面板可见）');
+
+    // 面板读的是「最近一次运行」的耗时/看门狗：越界留档排在后面不能把它挤掉
+    const snapshot = await buildSnapshot({ stateRoot, captainSessionId: 'session-ro-stop' });
+    const step = snapshot.runs[0].steps.find((item) => item.id === 't-arch');
+    assert.equal(step?.durationMs, 1234, '多一条越界留档不能让面板的耗时变成 undefined');
+  });
+});
+
+test('只读档越界检测：返工轮按 childId 归属，不挂到上一轮的运行记录上', async () => {
+  await withWorkspace(async (dir) => {
+    const child = () => ({
+      status: 'idle',
+      session: {
+        get seq() {
+          return 5;
+        },
+        ownEvents: () => [
+          { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', toolName: 'write' }] } } },
+          { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+        ],
+      },
+    });
+    // 审查门两次都判 FAIL：第 1 轮进"退回重做"（status=pending，本轮不写 run 证据）
+    const fake = fakeSubagents({ child, reply: () => ({ ok: true, text: '发现 HIGH lib/x.js:7 越权\n\nVERDICT: FAIL' }) });
+    const ctx = fakeCtx(fake);
+    const config = { ...CONFIG, scheduler: { ...CONFIG.scheduler, maxReviewRounds: 1 } };
+    const base = { ctx, config, agent: FAKE_AGENT, captainSessionId: 'session-ro-rework', workspace: dir };
+    const stateRoot = stateRootOf(dir, config.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    // 上一轮的运行记录先摆在那（不同 childId）：归属错了就会挂到它身上
+    await mutateTasks(stateRoot, 'session-ro-rework', (current) => ({
+      ...current,
+      seq: (current.seq ?? 1) + 1,
+      tasks: [
+        {
+          id: 't-review',
+          subject: '审一下',
+          role: 'code-reviewer',
+          roleName: '代码审查员',
+          kind: 'review',
+          status: 'pending',
+          deps: [],
+          order: 1,
+          workspace: dir,
+          evidence: [{ kind: 'run', at: '2026-01-01T00:00:00.000Z', childId: 'child-prev', durationMs: 1 }],
+        },
+      ],
+    }));
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-ro-rework'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-ro-rework')).tasks.find((item) => item.id === 't-review');
+    const previous = task.evidence.find((entry) => entry.childId === 'child-prev');
+    assert.equal(
+      previous.permissionViolation,
+      undefined,
+      '上一轮的运行记录绝不能被挂上本轮的越界（复核指出的错归属）',
+    );
+    const currentRun = task.evidence.find((entry) => String(entry.childId) === 'child-1');
+    assert.ok(currentRun !== undefined, '本轮越界要有一条带本次 childId 的记录');
+    assert.deepEqual(currentRun.permissionViolation, ['write']);
+  });
+});
+
+test('只读档越界检测：execute 档调写工具不算越界（检测只针对 readonly，不误伤实现者）', async () => {
+  await withWorkspace(async (dir) => {
+    const child = () => ({
+      status: 'idle',
+      session: {
+        get seq() {
+          return 5;
+        },
+        ownEvents: () => [
+          { type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', toolName: 'write' }] } } },
+          { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+        ],
+      },
+    });
+    const ctx = fakeCtx(fakeSubagents({ child }));
+    const base = { ctx, config: CONFIG, agent: FAKE_AGENT, captainSessionId: 'session-rw-ok', workspace: dir };
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await mutateTasks(stateRoot, 'session-rw-ok', (current) => ({
+      ...current,
+      seq: (current.seq ?? 1) + 1,
+      tasks: [
+        {
+          id: 't-exec',
+          subject: '实现',
+          role: 'executor',
+          roleName: '执行者',
+          kind: 'work',
+          status: 'pending',
+          deps: [],
+          order: 1,
+          workspace: dir,
+        },
+      ],
+    }));
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRoot, 'session-rw-ok'), 20000);
+
+    const task = (await readTasks(stateRoot, 'session-rw-ok')).tasks.find((item) => item.id === 't-exec');
+    assert.equal(task.status, 'done');
+    assert.equal(
+      task.evidence.some((entry) => entry.permissionViolation !== undefined),
+      false,
+      'execute 档的写操作是本职，不能记成越界',
+    );
+    const warnings = (await readEvents(stateRoot, 50)).filter(
+      (event) => event.data?.level === 'warn' && event.data?.task === 't-exec',
+    );
+    assert.equal(warnings.length, 0, '不该发越界 warn');
   });
 });
 
@@ -1329,8 +1677,9 @@ test('运行器：任务卡在 Windows 上写明用 win_bash、不要用 bash �
   assert.ok(win.includes('运行环境与工具（固定）'), 'Windows 上要有固定环境节');
   assert.ok(win.includes('win_bash'), '要说清用 win_bash');
   assert.ok(win.includes('不要用 `bash`'), '要明确禁用 bash');
-  assert.ok(win.includes('F:\\MT'), 'Windows 路径写法要给出示范');
-  assert.ok(win.includes('/f/MT'), '要指出 /f/ 写法在本机是错的');
+  // 审计问题 ④：任务卡是**跨仓库通用**的，不能带任何具体仓库路径（曾硬编码 F:\MT\...）
+  assert.ok(!win.includes('F:\\MT'), '任务卡不得硬编码具体仓库路径');
+  assert.ok(!/F:[\\/]/.test(win), '任务卡不得写死盘符路径示例，只用通用占位');
   assert.ok(win.includes('Set-Location'), '要附上实测报错，才知道这不是随便写的');
   assert.ok(win.includes('pwsh'), '要说清 pwsh 什么时候用');
   assert.ok(win.includes('`read`') && win.includes('`glob`'), '读文件/找文件用 read 与 glob/grep');

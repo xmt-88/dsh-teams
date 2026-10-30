@@ -22,6 +22,7 @@ import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
 import { readTasks, readTeam, stateRootOf, writeTasks, NOTE_MAX_CHARS } from '../lib/state.js';
 import { isRunning } from '../lib/scheduler.js';
+import { resetCaptainsForTests } from '../lib/captain.js';
 
 /** 造一个最小的假 cordis 上下文：只提供插件实际使用的成员。 */
 function fakeContext({ workspace }) {
@@ -1042,5 +1043,33 @@ test('HTTP：POST /approve-start 在真实插件接线下一次完成批准 + �
     assert.notEqual(team.phase, 'staged', '启动必须让 phase 离开 staged');
 
     await callTool(ctx, 'teams_stop', {}, exec);
+  });
+});
+
+test('HTTP：宿主取不到活 Agent 时，面板启动回 started=false + reasonCode（失败原因可定位）', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    ctx.__agents = new Map(); // 宿主 agents.get 恒 miss
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+    // 模拟"同进程也没登记过活 Agent"（进程重启/登记表被淘汰）：工具路径登记的那份也清掉
+    resetCaptainsForTests();
+
+    const out = await callRoute(ctx, '/plugins/dsh-teams/approve-start', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/approve-start',
+      body: { session: exec.agent.id },
+    });
+
+    assert.equal(out.status, 200);
+    assert.equal(out.body.approved, true, '批准仍要落盘（不能因为启动失败而丢掉批准这个事实）');
+    assert.equal(out.body.started, false, '取不到活 Agent 绝不能假装启动');
+    assert.equal(
+      out.body.reasonCode,
+      'miss',
+      `真机失败时要能定位分支（宿主 lookup miss / 登记表也没有）；实际 ${JSON.stringify(out.body)}`,
+    );
+    assert.match(out.body.reason, /没有活动的 Agent/);
+    const team = await readTeam(join(dir, '.dsh-teams'), exec.agent.id);
+    assert.notEqual(team.phase, 'running', '绝不能先写 running 而实际零派发');
   });
 });

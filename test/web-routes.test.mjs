@@ -819,8 +819,32 @@ test('批准并启动：宿主没提供启动能力时如实回 started=false，
     assert.equal(body.approved, true, '批准仍然生效');
     assert.equal(body.started, false, '没有启动能力就必须回 false');
     assert.match(body.reason, /未提供启动能力/, '要给出可显示的原因');
+    assert.equal(body.reasonCode, 'host-not-wired', '机器可读原因：面板据此区分"宿主没接线"与"没有活 Agent"');
     // 批准是真实的：面板刷新后应显示「已批准 · 待启动」而不是「运行中」
     assert.ok((await readTeam(stateRoot, sessionId)).approvedAt);
+  });
+});
+
+test('批准并启动：启动实现回 reasonCode 时原样透传（否则真机失败只能靠猜）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-approve-reason';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    const route = captureApproveStartRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), () => ({
+      started: false,
+      reasonCode: 'miss',
+      reason: '该会话当前没有活动的 Agent，无法启动调度（请回到会话后重试）',
+    }));
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/approve-start', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.approved, true, '批准已经落盘，要如实回报');
+    assert.equal(body.started, false);
+    assert.equal(body.reasonCode, 'miss', '启动失败的分支原因必须透传到面板');
+    assert.match(body.reason, /没有活动的 Agent/);
   });
 });
 

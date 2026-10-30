@@ -24,6 +24,7 @@ import { authenticatedWebRoutes, registerStateRoutes } from './lib/web-routes.js
 import { planTeam, approveTeam, startTeamRun, retryFailedTeam, stopRun, isRunning } from './lib/scheduler.js';
 import { setRoleEnabled, validateToggle } from './lib/role-state.js';
 import { registerCommands } from './lib/commands.js';
+import { resolveCaptain } from './lib/captain.js';
 import { summarize, truncate } from './lib/tasks.js';
 
 export const name = 'dsh-teams';
@@ -133,22 +134,14 @@ export const Config = z.object({
 const PROMPT_SECTION_ORDER = 120;
 
 /**
- * 从工具执行上下文解析会话工作区。
- * 队长会话的 header.cwd 即工作区；缺失时退回进程工作目录。
+ * 从工具执行上下文解析队长 Agent —— **唯一实现**，与斜杠命令、HTTP 路由共用
+ * `lib/captain.js` 的 `resolveCaptain`（审计：三处各写一份取法是缺陷反复出现的结构根因）。
+ * 仍保持 12 个工具原有的抛错语义：取不到就明确失败，不静默降级。
  */
-function workspaceOf(agent) {
-  const cwd = agent?.session?.header?.cwd;
-  if (typeof cwd === 'string' && cwd !== '') return cwd;
-  return process.cwd();
-}
-
-/** 取队长会话 id；没有活动会话时给出明确失败，而不是静默降级。 */
 function captainOf(exec) {
-  const agent = exec?.agent;
-  if (agent?.id === undefined || agent.id === null) {
-    throw new Error('dsh-teams: 该工具需要在会话内调用（无法确定队长会话）');
-  }
-  return { agent, captainSessionId: String(agent.id), workspace: workspaceOf(agent) };
+  const resolved = resolveCaptain({ agent: exec?.agent, source: 'tool' });
+  if (!resolved.ok) throw new Error(`dsh-teams: ${resolved.reason}`);
+  return { agent: resolved.agent, captainSessionId: resolved.captainSessionId, workspace: resolved.workspace };
 }
 
 /** 角色库缓存：按状态根缓存，自定义角色变更时失效。 */
@@ -811,7 +804,8 @@ function registerTools(ctx, config) {
         permissions: {
           type: 'string',
           enum: ['readonly', 'readwrite', 'execute'],
-          description: '权限档：readonly 只读；readwrite 可改文件；execute 可改文件并执行命令',
+          description:
+        '权限档：readonly 只读；readwrite 可改文件；execute 可改文件并执行命令（档位是提示词约束，不是运行时沙箱；越界由子代理结束后的会话事件检测记入 evidence）',
         },
         tier: {
           type: 'string',
@@ -1101,17 +1095,26 @@ function installWebSurface(ctx, config) {
           // 惰性取值：注册时这些服务可能还没就绪，请求到达时再解析
           workspaceRegistry: () => ctx.get('workspaceRegistry') ?? ctx.get('workspace'),
           // 面板「批准并启动」：启动必须持队长**活着的 Agent**（runLoop → startActivation 的 parent）。
-          // 路由层拿不到 tool 上下文，所以在宿主这边接线：按会话来取 Agent。
-          // 取不到时如实拒绝，绝不假装已启动（否则面板显示"运行中"而实际零派发）。
+          // 路由层拿不到 tool 上下文，所以这里交给与工具/命令**同一个**解析器：宿主 agents 优先，
+          // 同进程登记表兜底；取不到时如实拒绝并给出 reasonCode，绝不假装已启动。
           startRun: (args) => {
-            // ⚠️ 必须走 ctx.get('agents')：本插件只 inject 了 tools/systemPrompt，其它服务一律惰性获取。
-            // 写成 ctx.agents 时它恒为 undefined → 永远走"没有活 Agent"分支（真机报「启动失败」的根因）。
-            // 测试替身当时恰好挂了 agents 属性，把这个错盖住了 —— 替身必须走同一套 get()。
-            const agent = ctx.get('agents')?.get?.(args.captainSessionId);
-            if (agent === undefined || agent === null) {
-              return { started: false, reason: '该会话当前没有活动的 Agent，无法启动调度（请回到会话后重试）' };
+            const agents = ctx.get('agents');
+            const resolved = resolveCaptain({
+              captainSessionId: args.captainSessionId,
+              workspaceHint: args.workspace,
+              lookup: typeof agents?.get === 'function' ? (id) => agents.get(id) : undefined,
+              source: 'http',
+            });
+            if (!resolved.ok) {
+              return { started: false, reasonCode: resolved.reasonCode, reason: resolved.reason };
             }
-            return startTeamRun({ ...args, ctx, config, agent });
+            return startTeamRun({
+              ...args,
+              ctx,
+              config,
+              agent: resolved.agent,
+              workspace: args.workspace ?? resolved.workspace,
+            });
           },
         }),
       'dsh-teams: state route',

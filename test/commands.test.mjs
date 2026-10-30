@@ -241,6 +241,27 @@ test('/teams-approve 有计划时批准并立即开始派发（与面板按钮�
   });
 });
 
+test('/teams-approve 取不到活 Agent 时如实说明，不谎称已派发', async () => {
+  await withWorkspace(async (dir) => {
+    const { definitions } = setup();
+    const { agent } = fakeAgent(dir);
+    await planTeam({
+      ctx: fakeCtx(),
+      config: CONFIG,
+      agent,
+      captainSessionId: 'session-cmd',
+      workspace: dir,
+      task: '改个按钮颜色',
+    });
+
+    // 没有 invocation.agent：命令路径与工具路径共用同一个解析器，必须给同一套失败原因
+    const result = await definitions.get(COMMAND_NAMES.APPROVE).handler({});
+    assert.equal(result.kind, 'error', '取不到队长时必须明确失败');
+    assert.match(result.text, /需要在会话内调用|无法确定队长会话/);
+    assert.doesNotMatch(result.text, /已批准并开始执行|已开始派发/, '不能把"没启动"说成"已派发"');
+  });
+});
+
 test('/teams-run 未批准时拒绝（命令路径不绕过闸门）', async () => {
   await withWorkspace(async (dir) => {
     const { definitions } = setup();
