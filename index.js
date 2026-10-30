@@ -1104,7 +1104,10 @@ function installWebSurface(ctx, config) {
           // 路由层拿不到 tool 上下文，所以在宿主这边接线：按会话来取 Agent。
           // 取不到时如实拒绝，绝不假装已启动（否则面板显示"运行中"而实际零派发）。
           startRun: (args) => {
-            const agent = ctx.agents?.get?.(args.captainSessionId);
+            // ⚠️ 必须走 ctx.get('agents')：本插件只 inject 了 tools/systemPrompt，其它服务一律惰性获取。
+            // 写成 ctx.agents 时它恒为 undefined → 永远走"没有活 Agent"分支（真机报「启动失败」的根因）。
+            // 测试替身当时恰好挂了 agents 属性，把这个错盖住了 —— 替身必须走同一套 get()。
+            const agent = ctx.get('agents')?.get?.(args.captainSessionId);
             if (agent === undefined || agent === null) {
               return { started: false, reason: '该会话当前没有活动的 Agent，无法启动调度（请回到会话后重试）' };
             }

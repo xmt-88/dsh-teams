@@ -44,19 +44,23 @@ function fakeContext({ workspace }) {
         return () => {};
       },
     },
-    // 宿主用 ctx.agents.get(sessionId) 取活着的 Agent（面板「批准并启动」靠它接线）
-    agents: {
-      get(sessionId) {
-        const table = ctx.__agents ?? new Map();
-        return table.get(sessionId);
-      },
-    },
     get(key) {
       if (key === 'webServer' || key === 'httpServer') return ctx.__webServer;
       if (key === 'workspaceRegistry' || key === 'workspace') return ctx.__workspaceRegistry;
       if (key === 'connection') return { requestRejection: () => undefined };
       if (key === 'approval') return ctx.__approval;
       if (key === 'subagents') return ctx.__subagents;
+      // 宿主用 ctx.get('agents').get(sessionId) 取活着的 Agent（面板「批准并启动」靠它接线）。
+      // ⚠️ 必须走 get()：插件只 inject 了 tools/systemPrompt，真机上 ctx.agents 属性是 undefined。
+      // 以前的替身直接挂 agents 属性，正好把这个错误盖住了（真机报「启动失败」）。
+      if (key === 'agents') {
+        return {
+          get(sessionId) {
+            const table = ctx.__agents ?? new Map();
+            return table.get(sessionId);
+          },
+        };
+      }
       return undefined;
     },
     on() {

@@ -219,7 +219,7 @@ test('/teams-approve 无计划时失败并说明原因', async () => {
   });
 });
 
-test('/teams-approve 有计划时批准成功', async () => {
+test('/teams-approve 有计划时批准并立即开始派发（与面板按钮同语义）', async () => {
   await withWorkspace(async (dir) => {
     const { definitions } = setup();
     const { agent } = fakeAgent(dir);
@@ -234,7 +234,10 @@ test('/teams-approve 有计划时批准成功', async () => {
 
     const result = await definitions.get(COMMAND_NAMES.APPROVE).handler({ agent });
     assert.equal(result.kind, 'success');
-    assert.match(result.text, /teams-run/);
+    // 缺陷回归：以前只批准、回一句「执行 /teams-run 开始派发子代理」，
+    // 用户读成"已经在派发"，实际零派发。现在必须真的启动，且文案说清"已开始执行"。
+    assert.match(result.text, /已批准并开始执行/);
+    assert.match(result.text, /待派发 \d+ 个/);
   });
 });
 

@@ -1,0 +1,30 @@
+fix: 面板「启动失败」与 /teams-approve 不派发（真机复现的两个缺陷）
+
+用户真机反馈：
+A. 面板「批准并启动」按钮点击显示「启动失败」
+B. /teams-approve 回「开始派发子代理」但没有任何动静
+
+## A 根因：ctx.agents 属性不存在
+`index.js` 里写的是 `ctx.agents?.get?.(sessionId)`，但本插件
+`export const inject = ['tools', 'systemPrompt']` —— 它只注入这两个服务，
+其它一律靠 `ctx.get('...')` 惰性获取（webServer / subagents / workspaceRegistry 都是这么写的）。
+所以 `ctx.agents` 恒为 undefined → 每次点击都走"没有活 Agent"分支 → 用户看到启动失败。
+
+**为什么测试没抓到**：测试替身直接挂了 `agents` 属性，恰好满足这条错误写法。
+修法是两处一起改：
+- index.js 改为 `ctx.get('agents')?.get?.(sessionId)`
+- 测试替身删掉 `agents` 属性，改由 `get('agents')` 提供 —— 与生产同一套访问方式
+  （改完 index.js 而替身没改时，接线测试**立刻失败**，证明它现在真的能抓这个 bug）
+
+宿主侧 API 已核实：`ctx.agents.get(id)` 返回 `this.store.get(id)?.agent`，键是 sessionId。
+
+## B 根因：命令只批准、不派发，文案却像"已在派发"
+`lib/commands.js` 的 /teams-approve 只调 approveTeam，成功后回
+「计划已批准。执行 /teams-run 开始派发子代理。」—— 用户读成"已经开始派发"，
+而实际零派发；同时面板按钮是"批准+启动"，两条路径行为不一致。
+
+改成与面板同语义：批准 → 立即 startTeamRun。
+- 成功：「已批准并开始执行：共 N 个任务，待派发 M 个」
+- 批准成功但启动失败：如实说「已批准，但没能启动：<原因>」，不冒充"批准失败"
+
+340 条测试全绿（含一条新回归锁定"必须真的启动"）。
