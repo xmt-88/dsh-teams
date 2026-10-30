@@ -1,0 +1,47 @@
+feat: 四维度审计 + 失败原因透传到面板（审计流水线产出）
+
+## 审计怎么跑的
+完整路径，14 个任务：analyst → ui ‖ architect → critic → **四个审计师并行** → executor 汇总
+→ simplify ‖ review ‖ security ‖ test → verifier。
+
+四个审计师由自定义角色 + 触发词机制插入（readonly 档），各管一个维度：
+宏观架构/链路、运行逻辑/状态机、代理体系/权限、交互/死路。
+
+## 审计结论（摘要，详见各任务报告）
+
+**宏观（FAIL）**：分层与依赖方向清晰、无环；但
+- HIGH：**完成/失败/需决策的结果回传队长这条链路整条缺失**（runner:444、scheduler:695、commands:174），
+  宿主 spec 里有 delivery:'parent' 可用却没用
+- 洞察：「同一'启动'能力在三个适配层各自获取 Agent，而人工闸门只装在一处」——
+  这是缺陷 A/B 反复修不净的结构原因
+
+**运行（PASS）**：未发现重复派发、丢工作、热循环；内存锁占位与检查间无 await 窗口；
+epoch 世代守卫能丢迟到结果；崩溃残留有懒惰自愈。3 个 MEDIUM 属收口缺口。
+
+**代理体系（FAIL）**：
+- 角色契约可移植性 OK（16 个内置角色，项目名/技术栈硬编码 0 处）
+- HIGH：**声明权限不落地**——toolFilter 只在 roles.js 生成，派发时从不传入
+  （DSH 0.2.1 已移除该契约）→ readonly 的子代理实际持有 write/edit/bash
+- HIGH：沟通只有单向，子代理不能中途汇报或求助
+- 任务卡里写死 `win_bash` + `F:\MT\...` 示例路径（实际工作区是 F:\XMT\...）
+- 触发词无词边界，`ui`/`go` 会误命中
+
+**交互（FAIL）**：
+- HIGH：失败原因在 client.js:1242 被固定文案覆盖、服务端 500 reason 是常量、
+  真实异常在 detail 且前端从不读 → 用户永远看不到为什么失败
+- HIGH：failed / halted / needing-decision 三态在面板里没有可点出口（全文无 teams-retry）
+- HIGH：崩溃残留后 phase 仍 running，canApprove 要求 staged → 无入口；点停止又提示"已结束"
+
+## 本轮修复（汇总步骤只修了"原因到不了面板"这一条，其余 HIGH 明确留给下一步）
+- `lib/web-routes.js`：500 的 reason 改为真实报错文本（空则省略），detail 保留
+- `client.js`：approveFailureText 透传 reason —— 已批准→「已批准，但启动失败：<原因>（可再点一次重试）」，
+  未批准→「批准失败：<原因>」；点击即挂 pending 消除 15s 无反馈；提示条加 overflow-wrap
+- 测试：500 三场景、点击期 pending、失败后不残留进行中、reason 透传断言
+
+## 门禁结果
+- review PASS、security PASS
+- **test BLOCKED**：340/340 全绿，但「真实宿主点一次真的开始派发」无真机证据 →
+  按纪律拒绝判 PASS（不是代码失败）。verifier 因之 blocked。
+- 团队 phase = failed（t-test 为 BLOCKED 终态）
+
+340 条测试全绿，门控探针 7 ✓。

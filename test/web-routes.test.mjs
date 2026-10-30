@@ -935,6 +935,12 @@ test('批准并启动：启动实现抛错 → 500 且如实带原因（已批�
     assert.equal(res.record.status, 500);
     assert.match(res.record.body, /approve-start failed/);
     assert.match(res.record.body, /agent offline/);
+    // reason 必须是**真实原因**：前端只读 reason，常量文案会让面板永远只剩「启动失败」
+    const body500 = JSON.parse(res.record.body);
+    assert.equal(body500.approved, true, '批准已落盘的事实要带回去');
+    assert.equal(body500.started, false);
+    assert.equal(body500.reason, 'agent offline', '真实异常要进 reason（面板直接展示）');
+    assert.equal(body500.detail, 'agent offline', 'detail 保留，便于排查');
     // 批准先于启动完成，所以它已经落盘——面板刷新后显示「已批准 · 待启动」
     assert.ok((await readTeam(stateRoot, sessionId)).approvedAt);
   });

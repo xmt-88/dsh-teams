@@ -2962,6 +2962,12 @@ test('批准并启动：点完立即消失（乐观 UI），成功后保持消�
 
   // ① 请求还没回来，审批区就已经消失（不是等成功才消失）
   assert.equal(approvalZone(box), undefined, '点完立即消失：整块审批区卸载');
+  // ①.5 消失到响应回来之间不能是真空：立刻可见「进行中」
+  assert.equal(
+    collect(box.tree, (item) => item.props?.role === 'status')[0].children[0],
+    'approve.pending',
+    '请求在飞时要给「正在批准并启动…」，否则用户以为点了没反应',
+  );
   // ② 连点只发一次：旧按钮的 ref 守卫同步挡掉
   await button.props.onClick(click);
   assert.equal(calls.length, 1, '连点只发一次请求');
@@ -2992,6 +2998,11 @@ test('批准并启动：失败要恢复审批区并给原因（部分成功降�
   await approveButtons(box)[0].props.onClick(click);
   assert.equal(approveButtons(box).length, 1, '失败后必须恢复入口，否则用户无法重试');
   assert.equal(collect(box.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.failed');
+  assert.equal(
+    collect(box.tree, (item) => item.props?.role === 'status')[0],
+    undefined,
+    '失败后不能残留「正在批准…」的假进行中状态',
+  );
 
   // ② 批准被拒（任务图为空等）→ 恢复 + 显示服务端的真实原因
   impls.push(async () => ({ ok: true, approved: false, started: false, reason: '任务图为空，无法批准' }));
@@ -3113,20 +3124,41 @@ test('批准并启动：真实请求打到插件路由，403/503 有专属文案
     await approveButtons(box403)[0].props.onClick(click);
     assert.equal(collect(box403.tree, (item) => item.props?.role === 'alert')[0].children[0], 'approve.forbidden');
 
-    // 500 且服务端说明「已批准但启动失败」：不能报成「批准失败」，否则用户会重复批准
+    // 500 且批准已落盘：不能报成「批准失败」（否则用户重复批准），且必须带出服务端的真实原因
     fetchImpl = async () => ({
       ok: false,
       status: 500,
-      json: async () => ({ approved: true, started: false, reason: '已批准，但启动失败' }),
+      json: async () => ({ approved: true, started: false, reason: 'agent offline' }),
     });
     const box500 = remount();
     await approveButtons(box500)[0].props.onClick(click);
-    assert.equal(
-      collect(box500.tree, (item) => item.props?.role === 'alert')[0].children[0],
-      'approve.approvedStartFailed',
-      '批准已落盘时要说「已批准，启动失败」',
-    );
+    const alert500 = String(collect(box500.tree, (item) => item.props?.role === 'alert')[0].children[0]);
+    assert.ok(alert500.startsWith('approve.approvedStartFailedReason'), '批准已落盘时要说「已批准，启动失败」');
+    assert.ok(alert500.includes('agent offline'), '服务端 reason 必须显示出来，否则用户只知道「失败」');
+    assert.ok(alert500.includes('approve.retryHint'), '仍要提示可以再点一次');
     assert.equal(approveButtons(box500)[0].children[0], 'approve.start', '按钮也要降级为「启动」，不能又说回「批准并启动」');
+
+    // 500 但服务端没给原因（老宿主 / 空错误）：退回固定文案，不能拼出空冒号
+    fetchImpl = async () => ({ ok: false, status: 500, json: async () => ({ approved: true, started: false }) });
+    const box500NoReason = remount();
+    await approveButtons(box500NoReason)[0].props.onClick(click);
+    assert.equal(
+      collect(box500NoReason.tree, (item) => item.props?.role === 'alert')[0].children[0],
+      'approve.approvedStartFailed',
+      '没原因时用固定文案，不要拼出空原因',
+    );
+
+    // 500 且批准没落盘：说「批准失败」，同样要带原因（写盘失败等）
+    fetchImpl = async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ approved: false, started: false, reason: 'EACCES: team.json' }),
+    });
+    const box500Fail = remount();
+    await approveButtons(box500Fail)[0].props.onClick(click);
+    const alertFail = String(collect(box500Fail.tree, (item) => item.props?.role === 'alert')[0].children[0]);
+    assert.ok(alertFail.startsWith('approve.failedReason'), '批准没落盘时不能说成「已批准」');
+    assert.ok(alertFail.includes('EACCES'));
 
     // 「不批准，再商议」提交走 /note：带 session + 原文
     calls = [];

@@ -136,6 +136,13 @@ window.__ModuleLoader__.load({
       'approve.approvedOnly': '已批准，未启动',
       'approve.failed': '批准失败，请重试',
       'approve.approvedStartFailed': '已批准，但启动失败，可再点一次重试',
+      // 服务端把**原因本身**放在 reason 里（Agent 丢失 / 写盘失败 / 调度循环已在跑…）。
+      // 只给固定文案时，用户就只剩「启动失败」四个字，无从判断该修什么（真机缺陷 A 的最后一环）。
+      'approve.approvedStartFailedReason': '已批准，但启动失败：',
+      'approve.failedReason': '批准失败：',
+      'approve.retryHint': '（可再点一次重试）',
+      // 点完到响应回来最长 15s：审批区已卸载，必须立刻给一条「进行中」，否则看到的是「点了没反应」。
+      'approve.pending': '正在批准并启动…',
       'approve.forbidden': '当前会话无权批准这一轮',
       'approve.noRoute': '宿主没有提供批准接口（插件版本过旧）',
       'approve.authUnavailable': '鉴权服务不可用，暂时无法批准',
@@ -379,6 +386,10 @@ window.__ModuleLoader__.load({
       'approve.approvedOnly': 'Approved, not started',
       'approve.failed': 'Approval failed, please retry',
       'approve.approvedStartFailed': 'Approved, but starting failed — click again to retry',
+      'approve.approvedStartFailedReason': 'Approved, but starting failed: ',
+      'approve.failedReason': 'Approval failed: ',
+      'approve.retryHint': ' (click again to retry)',
+      'approve.pending': 'Approving and starting…',
       'approve.forbidden': 'This session is not allowed to approve the run',
       'approve.noRoute': 'The host does not provide the approve endpoint (plugin too old)',
       'approve.authUnavailable': 'Authentication is unavailable, cannot approve right now',
@@ -799,7 +810,8 @@ window.__ModuleLoader__.load({
 .dsh-teams-confirm-title{font-weight:600;color:var(--dsw-alias-label-primary);}
 .dsh-teams-confirm-count{font-size:11px;color:var(--dsw-alias-label-secondary);
   font-variant-numeric:tabular-nums;}
-.dsh-teams-stop-note{font-size:11px;padding:2px 0 4px;color:var(--dsw-alias-label-secondary);}
+.dsh-teams-stop-note{font-size:11px;padding:2px 0 4px;color:var(--dsw-alias-label-secondary);
+  overflow-wrap:anywhere;}
 .dsh-teams-stop-note[data-tone="error"]{color:var(--dsw-alias-state-error-primary);}
 
 /* 三态 */
@@ -1237,10 +1249,17 @@ window.__ModuleLoader__.load({
       if (status === 401 || status === 403) return t('approve.forbidden');
       if (status === 404) return t('approve.noRoute');
       if (status === 503) return t('approve.authUnavailable');
+      // 服务端把**真实原因**放在 reason 里（批准已落盘时即启动失败的原因）。丢掉它，
+      // 用户就只能看见「启动失败」，无从判断是 Agent 丢失、写盘失败还是循环已在跑。
+      const reason = typeof result?.reason === 'string' ? result.reason.trim() : '';
       // 批准已落盘、只是启动失败：说「已批准，启动失败」，别说成「批准失败」——
       // 那与磁盘事实矛盾，用户会以为没批过而重复点。
-      if (result?.approved === true) return t('approve.approvedStartFailed');
-      return t('approve.failed');
+      if (result?.approved === true) {
+        return reason === ''
+          ? t('approve.approvedStartFailed')
+          : `${t('approve.approvedStartFailedReason')}${reason}${t('approve.retryHint')}`;
+      }
+      return reason === '' ? t('approve.failed') : `${t('approve.failedReason')}${reason}`;
     }
 
     /**
@@ -2507,7 +2526,8 @@ window.__ModuleLoader__.load({
         // ① 乐观卸载：整块审批区在**同一提交内**消失，再发请求（用户：点完即消失）
         setApprovalHidden(true);
         setApproveError(undefined);
-        setApproveNotice(undefined);
+        // 卸载后到响应回来最长 15s，不能是真空：立刻挂一条「进行中」，结束再改写或清掉
+        setApproveNotice(t('approve.pending'));
         let result;
         try {
           result = await onApproveStart();
@@ -2521,6 +2541,7 @@ window.__ModuleLoader__.load({
           if (result.approved !== true) {
             // 批准被拒绝（任务图为空 / 没有计划）：如实报原因，不刷新成"已批准"
             setApprovalHidden(false);
+            setApproveNotice(undefined);
             setApproveError({ text: result.reason ?? t('approve.failed'), retryable: false });
             return;
           }
@@ -2545,6 +2566,7 @@ window.__ModuleLoader__.load({
         }
         // 失败：审批区挂回来（否则用户再也没有重试入口），并给出真实原因
         setApprovalHidden(false);
+        setApproveNotice(undefined);
         // 服务端说「批准已落盘、只是启动失败」时，按钮语义要跟着降级，不能又写回「批准并启动」
         if (result?.approved === true) setApprovedHere(true);
         setApproveError({ text: approveFailureText(t, result), retryable: result?.retryable === true });
