@@ -836,7 +836,11 @@ test('补充要求：下一次派发随任务卡下发给子代理（每个任�
         'Windows 派发时任务卡必须带固定环境说明，非 Windows 不带',
       );
       if (process.platform === 'win32') {
-        assert.ok(text.includes('不要用 `bash`'), 'Windows 上要明确禁用 bash 配 /f/ 路径');
+        // 只看「运行环境」这一节：补充要求（notes）是用户自己写的内容，里面提到 win_bash 不算违规
+        const section = text.slice(text.indexOf('## 运行环境与工具（固定）'));
+        const envOnly = section.slice(0, section.indexOf('\n## ', 1) === -1 ? section.length : section.indexOf('\n## ', 1));
+        assert.ok(envOnly.includes('盘符绝对路径'), 'Windows 上要讲清用盘符绝对路径');
+        assert.ok(!envOnly.includes('win_bash'), '环境说明不得写死具体 shell 工具名（不同 DSH 版本工具集不同）');
       }
     }
   });
@@ -1671,22 +1675,22 @@ test('运行器：persona 用角色契约 + 角色专属预算', () => {
   assert.ok(persona.includes('未确认项'), '应强调不确定项纪律');
 });
 
-test('运行器：任务卡在 Windows 上写明用 win_bash、不要用 bash 配 /f/ 路径', () => {
+test('运行器：任务卡在 Windows 上写清路径约定，且不假设某个 shell 工具名一定存在', () => {
   const task = { id: 't-exec', role: 'executor', roleName: '开发执行者' };
   const win = buildTaskPrompt({ task, platform: 'win32' });
   assert.ok(win.includes('运行环境与工具（固定）'), 'Windows 上要有固定环境节');
-  assert.ok(win.includes('win_bash'), '要说清用 win_bash');
-  assert.ok(win.includes('不要用 `bash`'), '要明确禁用 bash');
+  // 回归：曾写死「用 win_bash」——该工具在某些 DSH 版本里根本不存在，子代理照着做就报错
+  assert.ok(!win.includes('win_bash'), '不得写死具体 shell 工具名（不同 DSH 版本工具集不同）');
+  assert.ok(win.includes('盘符绝对路径'), '要讲清路径写法');
+  assert.ok(win.includes('/f/repo') || win.includes('POSIX'), '要点明 /f/... 这类写法是错的');
   // 审计问题 ④：任务卡是**跨仓库通用**的，不能带任何具体仓库路径（曾硬编码 F:\MT\...）
   assert.ok(!win.includes('F:\\MT'), '任务卡不得硬编码具体仓库路径');
   assert.ok(!/F:[\\/]/.test(win), '任务卡不得写死盘符路径示例，只用通用占位');
   assert.ok(win.includes('Set-Location'), '要附上实测报错，才知道这不是随便写的');
-  assert.ok(win.includes('pwsh'), '要说清 pwsh 什么时候用');
   assert.ok(win.includes('`read`') && win.includes('`glob`'), '读文件/找文件用 read 与 glob/grep');
 
-  // 非 Windows 不下发这套说明：否则子代理会以为本机命令名也是 win_bash
+  // 非 Windows 不下发这套说明
   const posix = buildTaskPrompt({ task, platform: 'darwin' });
-  assert.ok(!posix.includes('win_bash'), '非 Windows 不应提 win_bash');
   assert.ok(!posix.includes('运行环境与工具（固定）'), '非 Windows 不出环境节');
 });
 
