@@ -1,0 +1,28 @@
+fix: teams_retry / /teams-retry 与面板 /retry 统一判据（resumeTeam）
+
+## 问题
+上一批给面板加了 resumeTeam，但工具与命令还留在旧的 retryFailedTeam 上：
+- 面板 /retry → resumeTeam（能处理 halted）
+- teams_retry 工具 → retryFailedTeam（只认 failed/blocked）
+- /teams-retry 命令 → 同上
+
+后果（真机踩到）：团队被 stop 后任务全部回到 pending，此时
+`teams_retry` 回「没有失败或受阻的任务可续跑」，而 `teams_run` 能起来 —— 同一状态两个工具说法相反。
+审计批评过的那类「多处各写一份」又出现了一次。
+
+## 改法
+三条路径统一走 `resumeTeam`：
+- `index.js` teams_retry：`resolveCaptain` 取活 Agent → `resumeTeam`
+- `lib/commands.js` /teams-retry：同一调用
+- 输出加 `mode`（'retry' = 重排了；'resume' = 直接把停住的轮次重新派发）
+  工具 schema 补 `mode` 字段（不改会因 additionalProperties:false 被宿主拒掉）
+- 命令文案按 mode 分别说「已续跑」/「已恢复派发」
+
+## 测试（两条，都验过判别力）
+- `test/host.test.mjs`：teams_retry 在 halted + 任务 pending 时能续跑
+- `test/commands.test.mjs`：/teams-retry 同场景
+构造时显式把任务状态还原成 pending —— 替身里被 abort 的任务可能落成别的终态，
+不还原就测不到「只认 failed/blocked」这个缺陷。**已临时还原旧代码验证过这两条会 FAIL**，
+证明它们真的守得住。
+
+386 条测试全绿。

@@ -735,7 +735,7 @@ function registerTools(ctx, config) {
     defineTool({
       name: 'teams_retry',
       description:
-        '续跑：把失败与受阻的任务重新排上并继续调度，同时把上一次的部分产出作为「续写起点」注入任务卡（成员会先核对工作区实际状态，只补缺口、不重头再来）。已完成的步骤不会被重做。',
+        '续跑：把失败与受阻的任务重新排上并继续调度，同时把上一次的部分产出作为「续写起点」注入任务卡（成员会先核对工作区实际状态，只补缺口、不重头再来）。已完成的步骤不会被重做。若没有失败/受阻任务（例如团队被 stop 后任务都回到 pending），则直接把停住或失败的轮次重新派发。',
       parameters: {
         provider: { type: 'string', description: '子代理提供者名，默认为 spawn' },
         model: { type: 'string', description: '可选模型覆盖；不填则跟随配置与会话默认' },
@@ -749,6 +749,8 @@ function registerTools(ctx, config) {
             reason: { type: 'string' },
             retried: { type: 'integer' },
             resumed: { type: 'integer' },
+            // 'retry' = 重排了失败/受阻任务；'resume' = 没有可重排的，直接把停住的轮次重新派发
+            mode: { type: 'string' },
           },
         },
         render: (_args, value) =>
@@ -760,22 +762,27 @@ function registerTools(ctx, config) {
       },
       async execute(args, exec) {
         const { agent, captainSessionId, workspace } = captainOf(exec);
-        const retry = await retryFailedTeam({ config, captainSessionId, workspace });
-        // 工具公开契约保持原样（不含 reasonCode）：面板路由才需要机器可读分支，
-        // 这里只把人类可读的 reason 透给模型；reasonCode 由 resumeTeam/HTTP 层使用。
-        if (!retry.started) return { started: false, reason: retry.reason };
-
-        const started = await startTeamRun({
+        // 与面板 /retry 路由、/teams-retry 命令走**同一个** resumeTeam：
+        // 以前这里用 retryFailedTeam，只认 failed/blocked —— 团队被 halt 后任务已回到
+        // pending，工具会回「没有失败或受阻的任务可续跑」，而面板却能恢复（判据不一致）。
+        const resolvedAgent = resolveCaptain({ agent, source: 'tool' });
+        if (resolvedAgent.ok !== true) return { started: false, reason: resolvedAgent.reason };
+        const retry = await resumeTeam({
           ctx,
           config,
-          agent,
+          agent: resolvedAgent.agent,
           captainSessionId,
           workspace,
           providerName: args.provider,
           model: args.model,
         });
-        if (!started.started) return { started: false, reason: started.reason };
-        return { started: true, retried: retry.retried, resumed: retry.resumed };
+        // 工具公开契约保持原样（不含 reasonCode）：reasonCode 留给面板路由做机器分支。
+        if (retry.started !== true) return { started: false, reason: retry.reason };
+        if (retry.mode === 'resume') {
+          // 没有可重排的任务，是直接把停住的轮次重新派发
+          return { started: true, retried: 0, resumed: 0, mode: 'resume' };
+        }
+        return { started: true, retried: retry.retried ?? 0, resumed: retry.resumed ?? 0, mode: retry.mode };
       },
     }),
   );

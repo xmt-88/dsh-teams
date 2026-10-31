@@ -193,7 +193,7 @@ plugin_manager( action: "install_bundle", target: "<本目录绝对路径>" )
 | `/teams-status` | 阶段 / 路径 / 任务进度 | **否**（零成本） |
 | `/teams-approve` | 批准当前任务图并**立即启动**（与面板、`teams_run` 同一条启动路径） | **否** |
 | `/teams-run` | 启动调度 | **否** |
-| `/teams-retry` | 从失败处续跑 | **否** |
+| `/teams-retry` | 续跑：重排失败/受阻任务；没有可重排的（如被 stop 后任务回到 pending）则直接重新派发 | **否** |
 | `/teams-stop` | 停止调度循环 | **否** |
 | `/teams-roles` | 列出全部角色 | **否** |
 
@@ -205,7 +205,7 @@ plugin_manager( action: "install_bundle", target: "<本目录绝对路径>" )
 | `teams_plan` | 物化任务图，停在「待审批」 |
 | `teams_approve` | 批准计划。**硬闸门**：未批准前 `teams_run` 一律拒绝 |
 | `teams_run` | 启动调度，按依赖并行派发；立即返回，后台执行 |
-| `teams_retry` | 续跑：失败、受阻与「需队长决策」的任务重新排队，已完成的不重做 |
+| `teams_retry` | 续跑：失败、受阻与「需队长决策」的任务重新排队，已完成的不重做；没有可重排的则把停住的轮次重新派发 |
 | `teams_stop` | 停止（不再派发，已派发产出照常落盘） |
 | `teams_note` | 记录用户中途补充的要求（写入 `team.notes`，之后每次派发都随任务卡带给子代理） |
 | `teams_status` | 阶段（含 `needing-decision`）、路径、任务进度、是否需队长决策、已记录补充要求条数 |

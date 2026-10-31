@@ -114,6 +114,17 @@ async function callTool(ctx, name, args, exec) {
   return value;
 }
 
+/** 轮询到指定 phase（stop/run 都是异步收口，不能读一次就断言）。 */
+async function waitForPhase(ctx, exec, want, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = await callTool(ctx, 'teams_status', {}, exec);
+  while (last.phase !== want && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    last = await callTool(ctx, 'teams_status', {}, exec);
+  }
+  return last;
+}
+
 /** 每个用例一个临时工作区，避免互相污染。 */
 async function withWorkspace(run) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-teams-test-'));
@@ -929,6 +940,43 @@ test('审批策略=ask 且用户拒绝时不批准', async () => {
     const result = await callTool(ctx, 'teams_approve', {}, exec);
     assert.equal(result.approved, false);
     assert.match(result.reason, /拒绝/);
+  });
+});
+
+test('teams_retry 在「已停止但任务都是 pending」时能续跑（与命令/面板同一条判据）', async () => {
+  // 真实踩到过的场景：团队跑到一半被 stop → 任务全部回到 pending。
+  // 旧的 teams_retry 走 retryFailedTeam，只认 failed/blocked，于是回
+  // 「没有失败或受阻的任务可续跑」，而面板的 /retry 用 resumeTeam 却能恢复 —— 判据不一致。
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir);
+    // 子代理永不返回，保证 stop 能打断在飞任务
+    ctx.__subagents = {
+      startActivation() {
+        return new Promise(() => {});
+      },
+    };
+
+    await callTool(ctx, 'teams_plan', { task: '调整按钮颜色和间距', force_path: 'fast' }, exec);
+    ctx.__approval = { effectivePolicy: () => 'never', request: async () => 'allowed-once' };
+    await callTool(ctx, 'teams_approve', {}, exec);
+    ctx.__approval = undefined;
+    await callTool(ctx, 'teams_run', {}, exec);
+    await callTool(ctx, 'teams_stop', {}, exec);
+
+    const stopped = await waitForPhase(ctx, exec, 'halted');
+    assert.equal(stopped.phase, 'halted', '停稳后应是 halted（任务回到 pending，不是 failed）');
+
+    // 真机现场：stop 之后任务**全部回到 pending**。替身里被 abort 的任务可能落成别的终态，
+    // 这里显式还原，否则测不到「只认 failed/blocked」这个缺陷（已用旧代码验过判别力）。
+    const tasksFile = join(dir, '.dsh-teams', 'tasks', 'session-test-1.json');
+    const graph = JSON.parse(await readFile(tasksFile, 'utf8'));
+    for (const task of graph.tasks) {
+      if (task.status !== 'done') task.status = 'pending';
+    }
+    await writeFile(tasksFile, JSON.stringify(graph, null, 2), 'utf8');
+
+    const retried = await callTool(ctx, 'teams_retry', {}, exec);
+    assert.equal(retried.started, true, `停住的轮次必须能续跑，实际：${retried.reason ?? ''}`);
   });
 });
 

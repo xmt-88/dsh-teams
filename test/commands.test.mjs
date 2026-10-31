@@ -13,7 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -278,6 +278,49 @@ test('/teams-run 未批准时拒绝（命令路径不绕过闸门）', async () 
     const result = await definitions.get(COMMAND_NAMES.RUN).handler({ agent });
     assert.equal(result.kind, 'error', '未批准时命令也必须拒绝');
     assert.match(result.text, /尚未批准/);
+  });
+});
+
+test('/teams-retry 在「已停止但任务都是 pending」时能续跑（与工具、面板同一条判据）', async () => {
+  // 与 host.test 里那条工具回归同场景：stop 之后任务回到 pending，
+  // 旧的 retryFailedTeam 判据会误报「没有失败或受阻的任务可续跑」。
+  await withWorkspace(async (dir) => {
+    // 子代理永不返回，保证 stop 能打断在飞任务
+    const subagents = {
+      startActivation() {
+        return new Promise(() => {});
+      },
+    };
+    const { definitions } = setup(CONFIG, subagents);
+    const { agent } = fakeAgent(dir);
+    const base = { config: CONFIG, agent, captainSessionId: 'session-cmd', workspace: dir };
+
+    await planTeam({ ...base, ctx: fakeCtx(subagents), task: '改个按钮颜色', force_path: 'fast' });
+    assert.equal((await definitions.get(COMMAND_NAMES.APPROVE).handler({ agent })).kind, 'success');
+    await definitions.get(COMMAND_NAMES.RUN).handler({ agent });
+    await definitions.get(COMMAND_NAMES.STOP).handler({ agent });
+
+    // stop 是异步收口：等 phase 真正落到 halted，否则 retry 会因「循环仍在运行中」被拒
+    const teamFile = join(dir, CONFIG.stateDir, 'teams', 'session-cmd.json');
+    for (let i = 0; i < 200; i += 1) {
+      const team = JSON.parse(await readFile(teamFile, 'utf8'));
+      if (team.phase === 'halted') break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    // 真机现场就是这个状态：stop 之后任务**全部回到 pending**（不是 failed）。
+    // 替身里被 abort 的任务可能落成别的终态，这里显式还原成 pending，
+    // 否则这条用例测不到「只认 failed/blocked」这个缺陷（先用旧代码验过判别力）。
+    const tasksFile = join(dir, CONFIG.stateDir, 'tasks', 'session-cmd.json');
+    const graph = JSON.parse(await readFile(tasksFile, 'utf8'));
+    for (const task of graph.tasks) {
+      if (task.status !== 'done') task.status = 'pending';
+    }
+    await writeFile(tasksFile, JSON.stringify(graph, null, 2), 'utf8');
+
+    const result = await definitions.get(COMMAND_NAMES.RETRY).handler({ agent });
+    assert.equal(result.kind, 'success', `停住的轮次必须能续跑，实际：${result.text}`);
+    assert.match(result.text, /已恢复派发|已续跑/);
   });
 });
 
