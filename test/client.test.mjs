@@ -3451,3 +3451,213 @@ test('折叠行进度：steps 乱序也按依赖拓扑排段，插入任务自�
   assert.equal(insertedSegs.length, 5, '插入一个任务，线段自动从 4 段变 5 段');
   assert.equal(insertedBar.props['aria-valuemax'], '5', '读屏进度上限同步');
 });
+
+/* ================================================================== *
+ * 死路出口：失败 / 已停止 / 需队长决策 →「继续」，僵尸轮 →「恢复派发」
+ * ================================================================== */
+
+/** 取「继续 / 恢复派发」按钮。 */
+function retryButtons(box) {
+  return collect(
+    box.tree,
+    (node) => node.type === 'button' && String(node.props?.className ?? '').includes('dsh-teams-run-retry'),
+  );
+}
+
+/** 取「停止」按钮。 */
+function stopButtons(box) {
+  return collect(
+    box.tree,
+    (node) => node.type === 'button' && String(node.props?.className ?? '').includes('dsh-teams-run-stop'),
+  );
+}
+
+test('三种动作入口互斥：终态给「继续」、僵尸给「恢复派发」、真实运行给「停止」、待审批给「批准并启动」', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace);
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const overrides = {
+    onStop: async () => ({ ok: true, stopped: true }),
+    onApproveStart: async () => ({ ok: true, approved: true, started: true }),
+    onRetry: async () => ({ ok: true, started: true, mode: 'retry' }),
+  };
+  const baseRun = { ...node.props.run, runId: 'run-exit', current: true };
+  const mount = (run) =>
+    React.mount(node.type, {
+      ...node.props,
+      ...overrides,
+      run: { ...baseRun, ...run },
+      approvedAt: undefined,
+    });
+
+  for (const phase of ['failed', 'halted', 'needing-decision']) {
+    const box = mount({ phase });
+    assert.equal(retryButtons(box).length, 1, `${phase} 轮必须有「继续」出口（审计死路 1）`);
+    assert.equal(retryButtons(box)[0].children[0], 'retry.button', '终态文案是「继续（重试失败与受阻步骤）」');
+    assert.equal(stopButtons(box).length, 0, `${phase} 轮没有可停止的循环`);
+    assert.equal(approveButtons(box).length, 0, `${phase} 轮不能出现批准入口`);
+  }
+
+  const zombie = mount({ phase: 'running', stale: true });
+  assert.equal(retryButtons(zombie).length, 1, '僵尸轮必须有恢复出口（审计死路 2）');
+  assert.equal(retryButtons(zombie)[0].children[0], 'retry.resume', '僵尸轮文案是「恢复派发」');
+  assert.equal(stopButtons(zombie).length, 0, '僵尸态绝不显示停止（stopRun 只会返回 stopped:false）');
+  assert.deepEqual(metaTexts(zombie), ['标准', 'phase.stale'], '阶段写「未在运行」，不靠颜色传达');
+  const zombieDetails = collect(zombie.tree, (item) => item.type === 'details')[0];
+  assert.equal(zombieDetails.props['data-stale'], 'true', '僵尸态在 DOM 上有 data-stale');
+
+  const live = mount({ phase: 'running', stale: false });
+  assert.equal(retryButtons(live).length, 0, '真实运行中不给恢复/继续');
+  assert.equal(stopButtons(live).length, 1, '真实运行中只给停止');
+  assert.deepEqual(metaTexts(live), ['标准', 'phase.running']);
+  assert.equal(collect(live.tree, (item) => item.type === 'details')[0].props['data-stale'], undefined);
+
+  const staged = mount({ phase: 'staged' });
+  assert.equal(retryButtons(staged).length, 0, '待审批只能用「批准并启动」');
+  assert.equal(approveButtons(staged).length, 1);
+  assert.equal(stopButtons(staged).length, 0);
+
+  const done = mount({ phase: 'done' });
+  assert.equal(retryButtons(done).length, 0, '已完成轮没有继续出口');
+});
+
+test('继续：点击后按钮 disabled + aria-busy 且只发一次；成功显示进行中/结果并刷新；失败保留按钮并给真实原因', async () => {
+  let impl = () => new Promise(() => {});
+  const calls = [];
+  const refreshes = [];
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, {
+    onRetry: () => {
+      calls.push(1);
+      return impl();
+    },
+    onRefresh: () => refreshes.push(1),
+  });
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const failedRun = { ...node.props.run, runId: 'run-retry', current: true, phase: 'failed' };
+  const box = React.mount(node.type, { ...node.props, run: failedRun, approvedAt: undefined });
+  const click = { preventDefault() {}, stopPropagation() {} };
+
+  let release;
+  impl = () => new Promise((resolve) => { release = resolve; });
+  const inflight = retryButtons(box)[0].props.onClick(click);
+  assert.equal(retryButtons(box)[0].props.disabled, true, '请求在飞时必须禁用');
+  assert.equal(retryButtons(box)[0].props['aria-busy'], 'true', '读屏要知道正在继续');
+  assert.equal(retryButtons(box)[0].children[0], 'retry.pending', '进行中文案可见');
+  // 连点只发一次（ref 守卫同步挡掉）
+  await retryButtons(box)[0].props.onClick(click);
+  assert.equal(calls.length, 1, '连点只发一次请求');
+
+  release({ ok: true, started: true, mode: 'retry' });
+  await inflight;
+  assert.ok(refreshes.length >= 1, '成功后刷新快照，面板 1 秒内变形态');
+  const notice = collect(
+    box.tree,
+    (item) => item.props?.role === 'status' && String(item.props?.className ?? '').includes('dsh-teams-stop-note'),
+  )[0];
+  assert.equal(notice.children[0], 'retry.done', '成功要有可见反馈');
+
+  // 失败（started:false 带真实原因）：按钮必须保留，错误用 alert 显示宿主原因
+  impl = async () => ({
+    ok: true,
+    started: false,
+    mode: 'retry',
+    reasonCode: 'miss',
+    reason: '该会话当前没有活动的 Agent',
+  });
+  await retryButtons(box)[0].props.onClick(click);
+  assert.equal(retryButtons(box).length, 1, '失败后保留按钮，用户可直接重试');
+  const alert = collect(box.tree, (item) => item.props?.role === 'alert')[0];
+  assert.match(String(alert.children[0]), /没有活动的 Agent/, '必须显示宿主的真实原因，不能只说「继续失败」');
+});
+
+/* ------------------------------------------------------------------ *
+ * 补充验收（测试工程师）：出口的作用域与失败分档。
+ *   ① 只有「当前轮」才给出口 —— 历史轮的「继续」会续跑当前团队，属于错位操作
+ *   ② 已批准但启动失败的待审批轮必须保留「启动」入口（缺陷 A 的死路）
+ *   ③ 401/403、404、超时分档文案；失败后按钮必须仍可点
+ * ------------------------------------------------------------------ */
+test('出口作用域：历史轮、无注入、done 轮都不给「继续」；待审批轮只给「批准/启动」', async () => {
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, {
+    onRetry: async () => ({ ok: true, started: true, mode: 'retry' }),
+    onApproveStart: async () => ({ ok: true, approved: true, started: true }),
+    onStop: async () => ({ ok: true, stopped: true }),
+  });
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const mount = (run, extra = {}) =>
+    React.mount(node.type, { ...node.props, run: { ...node.props.run, ...run }, ...extra });
+
+  const history = mount({ current: false, phase: 'failed' });
+  assert.equal(retryButtons(history).length, 0, '历史轮的「继续」会续跑当前团队，必须不给');
+
+  const noHandler = mount({ current: true, phase: 'failed' }, { onRetry: undefined });
+  assert.equal(retryButtons(noHandler).length, 0, '宿主没注入继续能力时不给按钮');
+
+  const staged = mount({ current: true, phase: 'staged' }, { approvedAt: '2026-01-01T00:00:00.000Z' });
+  const approve = approveButtons(staged);
+  assert.equal(approve.length, 1, '已批准但循环没起来时，启动入口必须保留（否则就是新的死路）');
+  assert.equal(approve[0].children[0], 'approve.start', '已批准后文案降级为「启动」');
+  assert.equal(retryButtons(staged).length, 0, '待审批轮用批准入口，不能同时给继续');
+});
+
+test('继续失败分档：401/403、404、超时、500+原因各给专用文案，且按钮保持可点', async () => {
+  let reply = { ok: false, status: 403, retryable: false };
+  const { React, workspace } = await mountTeamWorkspace();
+  const runsBox = mountRunsView(React, workspace, { onRetry: async () => reply });
+  const node = componentNamed(runsBox.tree, 'RunItem');
+  const box = React.mount(node.type, {
+    ...node.props,
+    run: { ...node.props.run, current: true, phase: 'failed' },
+    approvedAt: undefined,
+  });
+  const click = { preventDefault() {}, stopPropagation() {} };
+  const alertText = () => {
+    const alert = collect(
+      box.tree,
+      (item) => item.props?.role === 'alert' && String(item.props?.className ?? '').includes('dsh-teams-stop-note'),
+    )[0];
+    return String(alert?.children?.[0] ?? '');
+  };
+
+  await retryButtons(box)[0].props.onClick(click);
+  assert.equal(alertText(), 'retry.forbidden', '403 是权限问题，不能说成可重试的网络错误');
+  assert.equal(retryButtons(box)[0].props.disabled, false, '失败后按钮必须仍可点');
+
+  reply = { ok: false, status: 404, retryable: false };
+  await retryButtons(box)[0].props.onClick(click);
+  assert.equal(alertText(), 'retry.noRoute', '404 说明宿主没有继续接口（插件过旧）');
+
+  reply = { ok: false, status: 0, timeout: true, retryable: true };
+  await retryButtons(box)[0].props.onClick(click);
+  assert.equal(alertText(), 'retry.timeout', '超时要如实说「没收到宿主响应」');
+
+  reply = { ok: false, status: 500, retryable: true, reason: '磁盘写失败' };
+  await retryButtons(box)[0].props.onClick(click);
+  assert.match(alertText(), /磁盘写失败/, '500 必须带宿主给的真实原因');
+});
+
+test('徽标：僵尸轮显示「团队已中断」而不是「运行中」，真实运行仍显示运行中', async () => {
+  const { module, React } = await pluginModule();
+  const ctx = fakeClientContext({ withSidebarRightTabs: true });
+  module.apply(ctx);
+  ctx.__declareSlot('conversation.session.header.actions');
+  const entry = ctx.__log.registers.find((item) => item.options.name === 'conversation.session.header.actions');
+  assert.ok(entry, '应注册头部入口');
+  const element = entry.component({ session: { id: 'captain-1' } });
+  const mount = (team) => React.mount(element.type, { ...element.props, store: fakeTeamStore(team) });
+  const badgeOf = (box) =>
+    collect(box.tree, (item) => item.type === 'button' && String(item.props?.className ?? '').includes('dsh-teams-badge'))[0];
+  const labelOf = (box) =>
+    collect(box.tree, (item) => item.type === 'span' && (item.children ?? []).length === 1)[0]?.children?.[0];
+
+  const zombie = badgeOf(mount({ ...PANEL_TEAM, phase: 'running', stale: true }));
+  assert.equal(zombie.props['data-stale'], 'true', '僵尸轮徽标要能被样式区分');
+  assert.equal(zombie.props['data-running'], 'false', '僵尸轮不得再显示为运行中');
+  assert.equal(labelOf(mount({ ...PANEL_TEAM, phase: 'running', stale: true })), 'badge.stale');
+
+  const live = badgeOf(mount({ ...PANEL_TEAM, phase: 'running', stale: false }));
+  assert.equal(live.props['data-running'], 'true');
+  assert.equal(live.props['data-stale'], 'false');
+  assert.equal(labelOf(mount({ ...PANEL_TEAM, phase: 'running', stale: false })), 'badge.running');
+});

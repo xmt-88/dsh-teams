@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
       'badge.idle': '团队',
       'badge.ready': '团队',
       'badge.running': '团队运行中',
+      'badge.stale': '团队已中断',
       'tab.title': '团队',
       'view.tasks': '任务板',
       'view.log': '运行日志',
@@ -94,6 +95,7 @@ window.__ModuleLoader__.load({
       'phase.staged': '待审批',
       'phase.stagedApproved': '已批准 · 待启动',
       'phase.running': '运行中',
+      'phase.stale': '未在运行',
       'phase.halted': '已暂停',
       'phase.done': '已完成',
       'phase.failed': '失败',
@@ -123,11 +125,24 @@ window.__ModuleLoader__.load({
       'stop.confirm': '确认停止',
       'stop.stopping': '停止中…',
       'stop.done': '已停止，正在收口…',
-      'stop.alreadyEnded': '这一轮已经结束',
+      'stop.alreadyEnded': '没有可停止的调度循环，请刷新查看最新状态',
       'stop.failed': '停止失败，请重试',
       'stop.forbidden': '当前会话无权停止这一轮',
       'stop.noRoute': '宿主没有提供停止接口（插件版本过旧）',
       'stop.authUnavailable': '鉴权服务不可用，暂时无法停止',
+      // ---- 继续 / 恢复派发（失败、已停止、需队长决策、僵尸轮的唯一出口） ----
+      'retry.button': '继续（重试失败与受阻步骤）',
+      'retry.resume': '恢复派发',
+      'retry.pending': '继续中…',
+      'retry.resuming': '恢复中…',
+      'retry.done': '已重新排上失败与受阻步骤，正在继续调度…',
+      'retry.resumed': '已恢复派发，正在继续调度…',
+      'retry.failed': '继续失败，请重试',
+      'retry.failedReason': '继续失败：',
+      'retry.forbidden': '当前会话无权继续这一轮',
+      'retry.noRoute': '宿主没有提供继续接口（插件版本过旧）',
+      'retry.authUnavailable': '鉴权服务不可用，暂时无法继续',
+      'retry.timeout': '继续请求超时，没收到宿主响应；请重试',
       // ---- 批准并启动（面板第二个写操作） ----
       'approve.button': '批准并启动',
       'approve.start': '启动',
@@ -286,6 +301,7 @@ window.__ModuleLoader__.load({
       'badge.idle': 'Team',
       'badge.ready': 'Team',
       'badge.running': 'Team running',
+      'badge.stale': 'Team interrupted',
       'tab.title': 'Team',
       'view.tasks': 'Task board',
       'view.log': 'Run log',
@@ -344,6 +360,7 @@ window.__ModuleLoader__.load({
       'phase.staged': 'Awaiting approval',
       'phase.stagedApproved': 'Approved · waiting to start',
       'phase.running': 'Running',
+      'phase.stale': 'Not running',
       'phase.halted': 'Paused',
       'phase.done': 'Done',
       'phase.failed': 'Failed',
@@ -373,11 +390,24 @@ window.__ModuleLoader__.load({
       'stop.confirm': 'Stop run',
       'stop.stopping': 'Stopping…',
       'stop.done': 'Stopped, wrapping up…',
-      'stop.alreadyEnded': 'This run has already ended',
+      'stop.alreadyEnded': 'No running scheduler to stop; refresh for the latest state',
       'stop.failed': 'Stop failed, please retry',
       'stop.forbidden': 'This session is not allowed to stop the run',
       'stop.noRoute': 'The host does not provide the stop endpoint (plugin too old)',
       'stop.authUnavailable': 'Authentication is unavailable, cannot stop right now',
+      // ---- continue / resume dispatch (the only exit for failed, halted, needs-decision, zombie runs) ----
+      'retry.button': 'Continue (retry failed & blocked steps)',
+      'retry.resume': 'Resume dispatch',
+      'retry.pending': 'Continuing…',
+      'retry.resuming': 'Resuming…',
+      'retry.done': 'Failed and blocked steps requeued; dispatching continues…',
+      'retry.resumed': 'Dispatch resumed…',
+      'retry.failed': 'Could not continue, please retry',
+      'retry.failedReason': 'Could not continue: ',
+      'retry.forbidden': 'This session is not allowed to continue the run',
+      'retry.noRoute': 'The host does not provide the continue endpoint (plugin too old)',
+      'retry.authUnavailable': 'Authentication is unavailable, cannot continue right now',
+      'retry.timeout': 'Continue request timed out; no response from host, please retry',
       // ---- approve and start (the panel's second write) ----
       'approve.button': 'Approve & start',
       'approve.start': 'Start',
@@ -551,6 +581,8 @@ window.__ModuleLoader__.load({
 .dsh-teams-badge[data-active="true"]{border-color:var(--dsw-alias-brand-primary);}
 .dsh-teams-badge .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-state-idle-primary);}
 .dsh-teams-badge[data-running="true"] .dot{background:var(--dsw-alias-brand-primary);}
+.dsh-teams-badge[data-stale="true"]{border-color:var(--dsw-alias-state-warn-primary);}
+.dsh-teams-badge[data-stale="true"] .dot{background:var(--dsw-alias-state-warn-primary);}
 .dsh-teams-badge .path{font-weight:600;color:var(--dsw-alias-label-primary);}
 
 .dsh-teams-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;
@@ -766,6 +798,16 @@ window.__ModuleLoader__.load({
 .dsh-teams-run-seg[data-status="pending"]{background:var(--dsw-alias-border-l2);}
 .dsh-teams-run-body{padding:0 10px 10px;}
 .dsh-teams-run[data-phase="running"]{border-color:var(--dsw-alias-brand-primary);}
+/* 僵尸轮：显示 running 但没有循环，边框改用 warn 色（文字同时说「未在运行」，不靠颜色） */
+.dsh-teams-run[data-stale="true"]{border-color:var(--dsw-alias-state-warn-primary);}
+/* 继续 / 恢复派发：折叠行内的整行操作位（始终可见，不因折叠而消失） */
+.dsh-teams-run-actions{grid-column:1 / -1;grid-row:3;display:flex;margin-top:6px;}
+.dsh-teams-run-retry{flex:1 1 100%;width:100%;min-height:36px;font-size:13px;border-radius:10px;
+  white-space:normal;font-weight:600;border-color:var(--dsw-alias-brand-primary);
+  background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base);}
+.dsh-teams-run-retry:hover{filter:brightness(.94);background:var(--dsw-alias-brand-primary);
+  color:var(--dsw-alias-bg-base);}
+.dsh-teams-run-retry:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:2px;}
 /* 标题行动作位：只剩「停止」（运行中）。批准并启动已移到流程图下方的整行审批区
    （用户实测：标题旁 11px 的小按钮又挤又不显眼，点完还只变灰不消失）。 */
 .dsh-teams-run-head[data-has-action="true"]{grid-template-columns:34px minmax(0,1fr) auto auto 12px;}
@@ -1241,6 +1283,53 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 面板的第三个写操作：继续当前团队（失败 / 已停止 / 需队长决策 / 僵尸轮）。
+     *
+     * 只 POST 到 `/plugins/dsh-teams/retry`，鉴权、状态根定位、取活 Agent 与
+     * 「重排 → 启动」的组合都在宿主侧完成。失败折成结果对象，绝不上抛；
+     * `started:false` 时把宿主的真实 reason 带回面板，绝不假装已启动。
+     *
+     * @returns {Promise<{ok:boolean, started?:boolean, mode?:string, retried?:number, resumed?:number,
+     *   reason?:string, reasonCode?:string, retryable?:boolean, status?:number, timeout?:boolean}>}
+     */
+    async function requestTeamRetry(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        return { ok: false, retryable: false, status: 400 };
+      }
+      const { response, timedOut } = await postJsonWithTimeout('/plugins/dsh-teams/retry', {
+        session: sessionId,
+      });
+      if (response === undefined) {
+        return { ok: false, retryable: true, status: 0, timeout: timedOut === true };
+      }
+      try {
+        if (response.ok !== true) {
+          const retryable = response.status >= 500 && response.status !== 503;
+          let reason;
+          try {
+            const body = await response.json();
+            reason = typeof body?.reason === 'string' ? body.reason : undefined;
+          } catch {
+            /* 响应体不是 JSON 就按"未知"处理 */
+          }
+          return { ok: false, retryable, status: response.status, reason };
+        }
+        const body = await response.json();
+        return {
+          ok: true,
+          started: body?.started === true,
+          mode: typeof body?.mode === 'string' ? body.mode : undefined,
+          retried: Number.isFinite(body?.retried) ? body.retried : undefined,
+          resumed: Number.isFinite(body?.resumed) ? body.resumed : undefined,
+          reason: typeof body?.reason === 'string' ? body.reason : undefined,
+          reasonCode: typeof body?.reasonCode === 'string' ? body.reasonCode : undefined,
+        };
+      } catch {
+        return { ok: false, retryable: true, status: 0 };
+      }
+    }
+
     /** 批准失败的文案：与停止同款分档（鉴权/路由缺失不值得重试）。 */
     function approveFailureText(t, result) {
       // 超时与普通网络错误分开说：用户等过，得知道"没收到响应"而不是"被拒绝"
@@ -1314,6 +1403,18 @@ window.__ModuleLoader__.load({
       if (status === 404) return t('stop.noRoute');
       if (status === 503) return t('stop.authUnavailable');
       return t('stop.failed');
+    }
+
+    /** 继续失败的文案：超时/鉴权/路由分档，其余带上宿主给的真实原因。 */
+    function retryFailureText(t, result) {
+      if (result?.timeout === true) return t('retry.timeout');
+      const status = result?.status;
+      if (status === 401 || status === 403) return t('retry.forbidden');
+      if (status === 404) return t('retry.noRoute');
+      if (status === 503) return t('retry.authUnavailable');
+      const reason = typeof result?.reason === 'string' ? result.reason.trim() : '';
+      if (reason !== '') return `${t('retry.failedReason')}${reason}`;
+      return t('retry.failed');
     }
 
     /**
@@ -1422,7 +1523,9 @@ window.__ModuleLoader__.load({
 
       const team = store.getSnapshot();
       const phase = team?.phase ?? 'idle';
-      const running = phase === 'running';
+      // 僵尸轮：磁盘说 running、宿主里没有循环。徽标要显示「团队已中断」而不是「运行中」
+      const stale = phase === 'running' && team?.stale === true;
+      const running = phase === 'running' && !stale;
       const active = team !== null && team !== undefined;
 
       return h(
@@ -1432,13 +1535,14 @@ window.__ModuleLoader__.load({
           className: 'dsh-teams-badge',
           'data-active': String(active),
           'data-running': String(running),
+          'data-stale': String(stale),
           title: team?.purpose ? String(team.purpose) : t('badge.idle'),
           onClick: () => props.onOpen?.(),
           'data-tick': String(tick),
         },
         // DeepSeek 经典蓝鲸鱼：运行中给主色，空闲时降饱和（见 CSS 的 data-running）
         h(GirlArt, { accent: running ? WHALE_BLUE : '#8FA3C8', size: 20, headOnly: true }),
-        h('span', null, running ? t('badge.running') : t('badge.idle')),
+        h('span', null, stale ? t('badge.stale') : running ? t('badge.running') : t('badge.idle')),
         team?.pathLabel ? h('span', { className: 'path' }, String(team.pathLabel)) : null,
       );
     }
@@ -2397,7 +2501,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 一轮运行的折叠项：头部一行（立绘牌 + 标题 + meta + 箭头 + 进度条），展开是流程图。 */
-    function RunItem({ run, t, openSession, canOpenSession, defaultOpen, busyMembers, onStop, onApproveStart, onNote, approvedAt, notes, onRefresh }) {
+    function RunItem({ run, t, openSession, canOpenSession, defaultOpen, busyMembers, onStop, onApproveStart, onRetry, onNote, approvedAt, notes, onRefresh }) {
       // 折叠时不挂载流程图：DOM 里只有头部（历史再长，挂载的卡片数 = 展开那一轮的步数）
       const [open, setOpen] = React.useState(defaultOpen === true);
       // 停止确认框：确认之前**不发任何请求**，所以取消不会改变任何状态
@@ -2419,8 +2523,13 @@ window.__ModuleLoader__.load({
       const [consultBusy, setConsultBusy] = React.useState(false);
       const [consultError, setConsultError] = React.useState(undefined);
       const [noteNotice, setNoteNotice] = React.useState(undefined);
+      // 继续 / 恢复派发：失败时按钮必须保留，成功后面板靠刷新变形态
+      const [retrying, setRetrying] = React.useState(false);
+      const [retryError, setRetryError] = React.useState(undefined);
+      const [retryNotice, setRetryNotice] = React.useState(undefined);
       const approveBusy = React.useRef(false);
       const noteBusy = React.useRef(false);
+      const retryBusy = React.useRef(false);
       const stopButtonRef = React.useRef(null);
       // 停止是异步收口的定时器：卸载时清掉，避免面板关掉后还在请求
       const settleTimers = React.useRef([]);
@@ -2442,10 +2551,17 @@ window.__ModuleLoader__.load({
       const approved =
         approvedHere ||
         (typeof approvedAt === 'string' && approvedAt !== '' && !Number.isNaN(Date.parse(approvedAt)));
-      const phaseLabel = phase === 'staged' && approved ? t('phase.stagedApproved') : t(`phase.${phase}`);
+      // 僵尸轮：快照说 running，但宿主进程里没有调度循环（典型：宿主重启）。
+      // 只认服务端显式 true；探测失败（undefined）时不给停止也不给恢复，避免误操作。
+      const stale = phase === 'running' && run.stale === true;
+      const phaseLabel = stale
+        ? t('phase.stale')
+        : phase === 'staged' && approved
+        ? t('phase.stagedApproved')
+        : t(`phase.${phase}`);
       // 停止入口只在「正在跑的这一轮」出现：历史轮次与已收口的轮次都没有可停止的循环。
-      // （快照里 current 对最新一轮恒为 true，所以还要看 phase——否则已完成的轮次也显示「停止」）
-      const canStop = run.current === true && phase === 'running' && typeof onStop === 'function';
+      // 僵尸轮没有循环可停（stopRun 只会返回 stopped:false），必须改给「恢复派发」。
+      const canStop = run.current === true && phase === 'running' && stale !== true && typeof onStop === 'function';
       // 「批准并启动」只在当前这一轮 + 待审批 + 有任务图时出现。
       // ⚠️ 已批准（approvedAt 已落盘）但循环没起来时**也要保留入口**：
       //    否则一旦批准成功而启动失败（宿主没有可用的 Agent、或启动抛错），按钮消失、
@@ -2455,6 +2571,14 @@ window.__ModuleLoader__.load({
         phase === 'staged' &&
         total > 0 &&
         typeof onApproveStart === 'function';
+      // 死路 1 的两个出口：终态轮「继续」，僵尸轮「恢复派发」；与停止/批准互斥。
+      const canRetry =
+        run.current === true &&
+        (phase === 'failed' || phase === 'halted' || phase === 'needing-decision') &&
+        typeof onRetry === 'function';
+      const canResume = run.current === true && stale && typeof onRetry === 'function';
+      const retryLabel = canResume ? t('retry.resume') : t('retry.button');
+      const retryBusyLabel = canResume ? t('retry.resuming') : t('retry.pending');
       // 已批准过：按钮语义从「批准并启动」降级为「启动」
       const approveLabel = approved ? t('approve.start') : t('approve.button');
       // 计数：未完成任务直接从这一轮的步骤算；忙碌成员来自团队快照（缺数据就显示「—」）
@@ -2571,6 +2695,47 @@ window.__ModuleLoader__.load({
         if (result?.approved === true) setApprovedHere(true);
         setApproveError({ text: approveFailureText(t, result), retryable: result?.retryable === true });
       };
+      /**
+       * 点击「继续 / 恢复派发」：一次请求完成「重排失败/受阻 → 启动」。
+       *
+       * 防连点用 ref 同步挡住；失败时按钮保留并显示宿主给的真实原因；
+       * 成功后补两次定向刷新，让面板在 1 秒内从终态/僵尸态变成 running。
+       */
+      const submitRetry = async (event) => {
+        // 操作行在 summary 内：不截断会"点继续却把这一轮收起来"
+        if (event !== undefined && typeof event.preventDefault === 'function') {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        if (retryBusy.current) return;
+        retryBusy.current = true;
+        setRetrying(true);
+        setRetryError(undefined);
+        setRetryNotice(undefined);
+        let result;
+        try {
+          result = await onRetry();
+        } catch {
+          result = { ok: false, retryable: true, status: 0 };
+        }
+        retryBusy.current = false;
+        setRetrying(false);
+        // 有反馈就展开这一轮（反馈行在 body 里）
+        setOpen(true);
+        if (result !== undefined && result.ok === true && result.started === true) {
+          setRetryNotice(result.mode === 'retry' ? t('retry.done') : t('retry.resumed'));
+          if (typeof onRefresh === 'function') {
+            onRefresh();
+            // 启动是异步收口的：补两次定向刷新，让面板在 1 秒内看到 running
+            for (const delay of [350, 900]) {
+              settleTimers.current.push(setTimeout(() => onRefresh(), delay));
+            }
+          }
+          return;
+        }
+        // 失败（含 started:false：宿主没接线 / 取不到 Agent / 循环在跑）：保留按钮可重试
+        setRetryError({ text: retryFailureText(t, result), retryable: result?.retryable === true });
+      };
       /** 展开/收起「不批准，再商议」：纯本地状态，不发请求、不改任何团队记录。 */
       const toggleConsult = (event) => {
         if (event !== undefined && typeof event.preventDefault === 'function') {
@@ -2624,6 +2789,7 @@ window.__ModuleLoader__.load({
         {
           className: 'dsh-teams-run',
           'data-phase': String(phase),
+          'data-stale': stale ? 'true' : undefined,
           open,
           onToggle: (event) => setOpen(event.currentTarget.open === true),
         },
@@ -2662,6 +2828,27 @@ window.__ModuleLoader__.load({
                   onClick: askStop,
                 },
                 t('stop.button'),
+              )
+            : null,
+          // 死路出口：折叠时也始终可见（操作行在 summary 里，横跨整行、位于进度条上方）。
+          // 同一轮同一时刻只会有「停止 / 批准 / 继续 / 恢复派发」中的一个动作。
+          canRetry || canResume
+            ? h(
+                'span',
+                { className: 'dsh-teams-run-actions' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dsh-teams-btn dsh-teams-run-retry',
+                    'aria-label': `${retryLabel}：${subject}`,
+                    title: retryLabel,
+                    'aria-busy': retrying ? 'true' : undefined,
+                    disabled: retrying,
+                    onClick: submitRetry,
+                  },
+                  retrying ? retryBusyLabel : retryLabel,
+                ),
               )
             : null,
           h('span', { className: 'dsh-teams-run-chevron', 'aria-hidden': 'true' }, '⌄'),
@@ -2759,6 +2946,15 @@ window.__ModuleLoader__.load({
                     'div',
                     { className: 'dsh-teams-stop-note', 'data-tone': approveError.retryable ? 'error' : 'muted', role: 'alert' },
                     approveError.text,
+                  )
+                : null,
+              // 继续 / 恢复派发的结果：成功用 status、失败用 alert；失败时操作行仍在，可直接再点
+              retryNotice ? h('div', { className: 'dsh-teams-stop-note', role: 'status', tabIndex: -1 }, retryNotice) : null,
+              retryError
+                ? h(
+                    'div',
+                    { className: 'dsh-teams-stop-note', 'data-tone': retryError.retryable ? 'error' : 'muted', role: 'alert' },
+                    retryError.text,
                   )
                 : null,
               h(FlowDiagram, { run, t, openSession, canOpenSession }),
@@ -2880,7 +3076,7 @@ window.__ModuleLoader__.load({
     const RUNS_PAGE = 8;
 
     /** 运行列表：每次任务一项，最新在最上面。 */
-    function RunsView({ team, t, openSession, canOpenSession, onStop, onApproveStart, onNote, onRefresh }) {
+    function RunsView({ team, t, openSession, canOpenSession, onStop, onApproveStart, onRetry, onNote, onRefresh }) {
       const runs = Array.isArray(team.runs) ? team.runs : [];
       const [showAll, setShowAll] = React.useState(false);
       if (runs.length === 0) return h('div', { className: 'dsh-teams-empty' }, t('view.noTasks'));
@@ -2906,6 +3102,7 @@ window.__ModuleLoader__.load({
               busyMembers,
               onStop,
               onApproveStart,
+              onRetry,
               onNote,
               // 批准只写 approvedAt、不改 phase，所以「已批准」这个事实只能从快照顶层读进来
               approvedAt: team.approvedAt,
@@ -3007,6 +3204,8 @@ window.__ModuleLoader__.load({
           // 面板的两个写操作：停止要确认后才 POST；批准并启动一点即发（幂等）
           onStop: () => requestTeamStop(team.captainSessionId),
           onApproveStart: () => requestTeamApproveStart(team.captainSessionId),
+          // 失败/已停止/需队长决策轮「继续」，僵尸轮「恢复派发」：同一个 retry 路由
+          onRetry: () => requestTeamRetry(team.captainSessionId),
           // 「不批准，再商议」：只记录修改意见，不批准也不启动
           onNote: (text) => requestTeamNote(team.captainSessionId, text),
           onRefresh: () => store.refresh(),

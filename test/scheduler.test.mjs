@@ -29,9 +29,9 @@ import {
   DEP_OUTPUT_LIMIT,
   DEP_TOTAL_LIMIT,
 } from '../lib/tasks.js';
-import { planTeam, approveTeam, startTeamRun, retryFailedTeam, isRunning, classifyFailure, extractFindings, stopRun } from '../lib/scheduler.js';
+import { planTeam, approveTeam, startTeamRun, retryFailedTeam, resumeTeam, isRunning, classifyFailure, extractFindings, stopRun } from '../lib/scheduler.js';
 import { buildPersona, buildTaskPrompt, extractOutput, describeStopReason, resolveChildDelegationDepth, resolveTimeoutMs, TIMEOUT_MS } from '../lib/runner.js';
-import { readTasks, readTeam, stateRootOf, mutateTasks, appendTeamNote, readEvents } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, mutateTasks, mutateTeam, appendTeamNote, readEvents } from '../lib/state.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { PATH_TEMPLATES } from '../lib/router.js';
 
@@ -1270,6 +1270,103 @@ test('续跑：调度循环还在跑时拒绝（避免同一队两条循环）',
   });
 });
 
+test('继续（resumeTeam）：失败轮先重排失败/受阻任务再启动，mode=retry', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({
+      reply: (label) => (label.includes('t-executor') ? { ok: false, text: '改了一半' } : { ok: true }),
+    });
+    const base = { ctx: fakeCtx(fake), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    await waitFor(async () => !isRunning(stateRootOf(dir, CONFIG.stateDir), 's'), 15000);
+
+    // 让第二次能成功：失败任务重新排队后应被派发
+    fake.setReply(() => ({ ok: true }));
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, true, `失败轮应能继续（reason=${resumed.reason ?? ''}）`);
+    assert.equal(resumed.mode, 'retry', '有失败/受阻任务时走重排模式');
+    assert.ok(resumed.retried >= 1, '至少重排了执行者');
+    await waitFor(async () => !isRunning(stateRootOf(dir, CONFIG.stateDir), 's'), 15000);
+    const after = await readTasks(stateRootOf(dir, CONFIG.stateDir), 's');
+    assert.equal(after.tasks.filter((task) => task.status === 'failed').length, 0, '继续后不应再有失败任务');
+  });
+});
+
+test('继续（resumeTeam）：已停止轮只剩 pending 时直接启动（不被「没有可续跑」二次堵死）', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({});
+    const base = { ctx: fakeCtx(fake), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+    // 模拟用户停止后的收口：在飞任务已被 finalizeRun 复位成 pending，phase=halted
+    await mutateTeam(stateRoot, 's', (team) => {
+      team.phase = 'halted';
+      team.finishedAt = new Date().toISOString();
+      return team;
+    });
+    const before = await readTasks(stateRoot, 's');
+    assert.ok(before.tasks.every((task) => task.status === 'pending'), '夹具应只剩 pending');
+
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, true, `halted-only-pending 应能继续（reason=${resumed.reason ?? ''}）`);
+    assert.equal(resumed.mode, 'resume', '没有可重排任务时 mode=resume');
+    assert.equal(isRunning(stateRoot, 's'), true, '应真的启动调度循环（不是只返回 started:true）');
+    await waitFor(async () => !isRunning(stateRoot, 's'), 15000);
+  });
+});
+
+test('继续（resumeTeam）：done 轮没有可续任务时拒绝，绝不空跑重开', async () => {
+  await withWorkspace(async (dir) => {
+    const base = { ctx: fakeCtx(fakeSubagents({})), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+    await mutateTeam(stateRoot, 's', (team) => {
+      team.phase = 'done';
+      return team;
+    });
+
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, false);
+    assert.equal(resumed.reasonCode, 'nothing-retryable');
+    assert.equal(isRunning(stateRoot, 's'), false, '不得为 done 轮启动循环');
+  });
+});
+
+test('继续（resumeTeam）：僵尸轮（phase=running + 残留 running 任务，内存无循环）直接启动并复位在飞任务', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({});
+    const base = { ctx: fakeCtx(fake), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    // 宿主重启后的真实形态：磁盘 phase=running、任务停在 running，进程内 activeLoops 为空
+    await mutateTasks(stateRoot, 's', (graph) => {
+      graph.tasks[0].status = 'running';
+      graph.tasks[0].epoch = 0;
+      return graph;
+    });
+    await mutateTeam(stateRoot, 's', (team) => {
+      team.phase = 'running';
+      delete team.finishedAt;
+      return team;
+    });
+    assert.equal(isRunning(stateRoot, 's'), false, '内存里没有循环（僵尸轮前提）');
+
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, true, `僵尸轮应能恢复派发（reason=${resumed.reason ?? ''}）`);
+    assert.equal(resumed.mode, 'resume', '没有失败/受阻任务时走直接启动');
+    assert.equal(isRunning(stateRoot, 's'), true, '应真的启动调度循环，而不是只返回 started:true');
+    await waitFor(async () => !isRunning(stateRoot, 's'), 15000);
+    const after = await readTasks(stateRoot, 's');
+    assert.equal(after.tasks.some((task) => task.status === 'running'), false, '遗留 running 必须被复位并跑完');
+    assert.equal(after.tasks.filter((task) => task.status === 'done').length, after.tasks.length, '复位后的任务应全部完成');
+  });
+});
+
 test('派发：把工作区作为 cwd 交给子代理（0.2.1 新增字段），并走 caller 投递', async () => {
   await withWorkspace(async (dir) => {
     const fake = fakeSubagents({});
@@ -2014,4 +2111,63 @@ test('统计：待决策与失败分开计数，blocked 不混进 failed', () =>
   assert.equal(stats.blocked, 2, 'blocked 单独计数');
   assert.equal(stats.needsDecision, 1, '待决策单独计数');
   assert.equal(stats.total, 4);
+});
+
+/* ------------------------------------------------------------------ *
+ * 补充验收（测试工程师）：①里最容易漏的一条 —— 需队长决策轮
+ * （blocked + needsDecision）也必须能「继续」，且继续后待决策标记要清掉，
+ * 否则收口阶段又被判回 needing-decision，仍然是死路。
+ * ------------------------------------------------------------------ */
+test('继续（resumeTeam）：需队长决策轮（blocked + needsDecision）重排后启动，标记被清掉', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({});
+    const base = { ctx: fakeCtx(fake), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+
+    // 驳回轮次用尽后的真实盘面：最后一步 blocked + needsDecision，phase=needing-decision
+    await mutateTasks(stateRoot, 's', (graph) => {
+      const last = graph.tasks[graph.tasks.length - 1];
+      last.status = 'blocked';
+      last.needsDecision = { reason: '评审两轮仍 FAIL', rounds: 3 };
+      return graph;
+    });
+    await mutateTeam(stateRoot, 's', (team) => {
+      team.phase = 'needing-decision';
+      team.finishedAt = new Date().toISOString();
+      return team;
+    });
+
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, true, `需队长决策轮应能继续（reason=${resumed.reason ?? ''}）`);
+    assert.equal(resumed.mode, 'retry', '有受阻任务时必须走重排模式，而不是直接启动空转');
+    assert.ok(resumed.retried >= 1, '受阻步骤必须被重新排上');
+
+    await waitFor(async () => !isRunning(stateRoot, 's'), 15000);
+    const after = await readTasks(stateRoot, 's');
+    assert.equal(after.tasks.some((task) => task.status === 'blocked'), false, '继续后不应再有受阻任务');
+    assert.equal(after.tasks.every((task) => task.status === 'done'), true, '重排后应全部跑完');
+    assert.equal(after.tasks.some((task) => task.needsDecision !== undefined), false, '待决策标记必须一并清掉');
+    const team = await readTeam(stateRoot, 's');
+    assert.notEqual(team.phase, 'needing-decision', '收口后不得仍停在「需队长决策」');
+  });
+});
+
+test('继续（resumeTeam）：循环仍在跑时拒绝并给 reasonCode=running，绝不起第二条循环', async () => {
+  await withWorkspace(async (dir) => {
+    const fake = fakeSubagents({ delayMs: 300 });
+    const base = { ctx: fakeCtx(fake), config: CONFIG, agent: FAKE_AGENT, captainSessionId: 's', workspace: dir };
+    await planTeam({ ...base, task: '改个按钮颜色' });
+    await approveTeam(base);
+    await startTeamRun(base);
+    const stateRoot = stateRootOf(dir, CONFIG.stateDir);
+    assert.equal(isRunning(stateRoot, 's'), true, '前提：调度循环真的在跑');
+
+    const resumed = await resumeTeam(base);
+    assert.equal(resumed.started, false, '运行中的轮次不得再起一条循环');
+    assert.equal(resumed.reasonCode, 'running', '面板/命令据此提示「等它收口再续跑」');
+    assert.match(resumed.reason, /仍在运行中/);
+    await waitFor(async () => !isRunning(stateRoot, 's'), 15000);
+  });
 });

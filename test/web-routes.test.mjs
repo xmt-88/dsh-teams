@@ -59,7 +59,7 @@ function fakeJsonRequest(url, body, method = 'POST') {
 }
 
 /** 注册路由并取回它（便于直接调用 handler）。 */
-function captureRoutes(config, connection, workspaceRegistry, stopRun, startRun) {
+function captureRoutes(config, connection, workspaceRegistry, stopRun, startRun, extras = {}) {
   const registered = [];
   const rawServer = {
     register(route) {
@@ -68,7 +68,7 @@ function captureRoutes(config, connection, workspaceRegistry, stopRun, startRun)
     },
   };
   const webServer = authenticatedWebRoutes(rawServer, () => connection());
-  registerStateRoutes({ webServer, config, workspaceRegistry, stopRun, startRun });
+  registerStateRoutes({ webServer, config, workspaceRegistry, stopRun, startRun, ...extras });
   return registered;
 }
 
@@ -1091,5 +1091,258 @@ test('note 路由：鉴权与读路由同款（503/401/403），被拒时绝不�
       assert.match(res.record.body, pattern);
     }
     assert.equal((await readTeam(stateRoot, sessionId)).notes, undefined, '被拒请求不得写盘');
+  });
+});
+
+/* ================================================================== *
+ * 僵尸轮识别：phase=running 但内存里没有调度循环
+ * ================================================================== */
+
+test('快照：running + 无循环探针 → stale:true；有循环 → false；未注入探针 → 不带字段', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-stale';
+    await seedTeam(stateRoot, sessionId, dir);
+    await mutateTeam(stateRoot, sessionId, (team) => {
+      team.phase = 'running';
+      return team;
+    });
+
+    const live = await buildSnapshot({
+      stateRoot,
+      captainSessionId: sessionId,
+      isRunning: () => true,
+    });
+    assert.equal(live.stale, false, '循环真的在跑时不得标成僵尸');
+    assert.equal(live.runs[0].stale, false, '当前轮同样给出 false');
+
+    const zombie = await buildSnapshot({
+      stateRoot,
+      captainSessionId: sessionId,
+      isRunning: () => false,
+    });
+    assert.equal(zombie.stale, true, '磁盘说 running、内存无循环 → 僵尸轮');
+    assert.equal(zombie.runs[0].stale, true, 'runs[0] 也必须带上（面板按轮渲染）');
+    assert.equal(zombie.phase, 'running', 'phase 本身不改写：只是多一个 stale 事实');
+
+    const unprobed = await buildSnapshot({ stateRoot, captainSessionId: sessionId });
+    assert.equal('stale' in unprobed, false, '没有探针时保持旧快照形状（不猜）');
+    assert.equal('stale' in unprobed.runs[0], false, '当前轮也不得有 stale');
+  });
+});
+
+test('快照路由：注入的 isRunning 探针传到 buildSnapshot（面板 GET /state 能看到僵尸态）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-stale-route';
+    await seedTeam(stateRoot, sessionId, dir);
+    await mutateTeam(stateRoot, sessionId, (team) => {
+      team.phase = 'running';
+      return team;
+    });
+    const routes = captureRoutes(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), undefined, undefined, {
+      isRunning: () => false,
+    });
+    const state = routes.find((route) => route.path === '/plugins/dsh-teams/state');
+    const res = fakeResponse();
+    await state.handler(fakeRequest(`/plugins/dsh-teams/state?session=${sessionId}`), res);
+    assert.equal(res.record.status, 200);
+    const team = JSON.parse(res.record.body).team;
+    assert.equal(team.stale, true);
+    assert.equal(team.runs[0].stale, true);
+  });
+});
+
+/* ================================================================== *
+ * 继续路由（POST /plugins/dsh-teams/retry）
+ *
+ * 死路 1/2 的唯一出口：终态轮重排失败/受阻任务并启动；僵尸轮复位残留 running
+ * 后直接启动。宿主侧必须先 resolveCaptain 再调 resumeTeam（顺序由 index.js 保证）。
+ * ================================================================== */
+
+/** 取继续路由。 */
+function captureRetryRoute(config, connection, workspaceRegistry, retryRun) {
+  const routes = captureRoutes(config, connection, workspaceRegistry, undefined, undefined, { retryRun });
+  const route = routes.find((item) => item.path === '/plugins/dsh-teams/retry');
+  assert.ok(route, '应注册继续路由');
+  return route;
+}
+
+test('继续：POST /retry 调注入的 retryRun，透传 started/mode/retried/resumed 并留审计事件', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-retry';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    const calls = [];
+    const route = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true, mode: 'retry', retried: 2, resumed: 1 };
+    });
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: sessionId }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.equal(res.record.headers['cache-control'], 'no-store');
+    assert.deepEqual(JSON.parse(res.record.body), {
+      started: true,
+      mode: 'retry',
+      retried: 2,
+      resumed: 1,
+      captainSessionId: sessionId,
+    });
+    assert.deepEqual(calls, [{ captainSessionId: sessionId, workspace: dir, stateRoot }], '必须把工作区（不是状态根）交给宿主');
+    const events = await readEvents(stateRoot, 20);
+    assert.equal(events.filter((event) => event.type === 'gate' && event.data?.action === 'retry').length, 1);
+  });
+});
+
+test('继续：started=false 时原样透传 reasonCode/reason（取不到 Agent / 循环在跑不假装成功）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-retry-miss';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+    const route = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), () => ({
+      started: false,
+      reasonCode: 'miss',
+      reason: '该会话当前没有活动的 Agent，无法启动调度（请回到会话后重试）',
+    }));
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: sessionId }), res);
+
+    const body = JSON.parse(res.record.body);
+    assert.equal(res.record.status, 200);
+    assert.equal(body.started, false);
+    assert.equal(body.reasonCode, 'miss', '机器可读原因必须透传，面板据此显示真实原因');
+    assert.match(body.reason, /没有活动的 Agent/);
+  });
+});
+
+test('继续：宿主没注入 retryRun → 200 started=false + host-not-wired，绝不假装已启动', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-retry-nowire';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+    const route = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }));
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: sessionId }), res);
+
+    const body = JSON.parse(res.record.body);
+    assert.equal(res.record.status, 200);
+    assert.equal(body.started, false);
+    assert.equal(body.reasonCode, 'host-not-wired');
+    assert.match(body.reason, /未提供继续能力/);
+  });
+});
+
+test('继续：定位不到团队 → 200 started=false + no-team，不调用宿主', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const calls = [];
+    const route = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), (input) => {
+      calls.push(input);
+      return { started: true };
+    });
+    const res = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: 'session-nobody' }), res);
+
+    assert.equal(res.record.status, 200);
+    assert.deepEqual(JSON.parse(res.record.body), {
+      started: false,
+      reasonCode: 'no-team',
+      reason: '当前会话还没有团队计划',
+    });
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('继续：400（坏 JSON / 缺 session）与 405（非 POST）', async () => {
+  await withWorkspace(async ({ dir }) => {
+    const route = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), () => ({ started: true }));
+
+    const badJson = fakeResponse();
+    await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', '{not json'), badJson);
+    assert.equal(badJson.record.status, 400);
+    assert.match(badJson.record.body, /invalid json body/);
+
+    for (const body of [{}, { session: '' }, { session: '   ' }, { session: 42 }]) {
+      const missing = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', body), missing);
+      assert.equal(missing.record.status, 400, `缺 session 应 400：${JSON.stringify(body)}`);
+      assert.match(missing.record.body, /missing session parameter/);
+    }
+
+    const get = fakeResponse();
+    await route.handler(fakeRequest('/plugins/dsh-teams/retry', 'GET'), get);
+    assert.equal(get.record.status, 405);
+  });
+});
+
+test('继续：鉴权被拒（503/401/403）时不调用宿主；宿主抛错 → 500 带真实原因', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-retry-gate';
+    await seedTeam(stateRoot, sessionId, dir);
+    await seedGraph(stateRoot, sessionId);
+
+    const gates = [
+      [() => undefined, 503, /authentication unavailable/],
+      [() => ({ requestRejection: () => 401 }), 401, /unauthorized/],
+      [() => ({ requestRejection: () => 403 }), 403, /forbidden/],
+    ];
+    for (const [connection, status, pattern] of gates) {
+      const calls = [];
+      const route = captureRetryRoute(APPROVE_CONFIG, connection, () => ({ list: () => [{ path: dir }] }), (input) => {
+        calls.push(input);
+        return { started: true };
+      });
+      const res = fakeResponse();
+      await route.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: sessionId }), res);
+      assert.equal(res.record.status, status, `应返回 ${status}`);
+      assert.match(res.record.body, pattern);
+      assert.equal(calls.length, 0, '被拒请求不得继续/启动');
+    }
+
+    const boom = captureRetryRoute(APPROVE_CONFIG, OK_CONNECTION, () => ({ list: () => [{ path: dir }] }), () => {
+      throw new Error('磁盘写失败');
+    });
+    const res = fakeResponse();
+    await boom.handler(fakeJsonRequest('/plugins/dsh-teams/retry', { session: sessionId }), res);
+    assert.equal(res.record.status, 500);
+    const body = JSON.parse(res.record.body);
+    assert.equal(body.started, false);
+    assert.match(body.reason, /磁盘写失败/, '500 也要把真实原因回给面板');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 补充验收（测试工程师）：stale 的安全边界。
+ * 「探针缺失/报错」与「非 running 阶段」都必须不给 stale —— 误标僵尸会让
+ * 真实运行中的轮次失去「停止」入口，比漏标更危险。
+ * ------------------------------------------------------------------ */
+test('快照：探针报错或非 running 阶段都不得标 stale（宁可不给动作，不误判）', async () => {
+  await withWorkspace(async ({ dir, stateRoot }) => {
+    const sessionId = 'session-stale-safe';
+    await seedTeam(stateRoot, sessionId, dir);
+    await mutateTeam(stateRoot, sessionId, (team) => {
+      team.phase = 'running';
+      return team;
+    });
+
+    const broken = await buildSnapshot({
+      stateRoot,
+      captainSessionId: sessionId,
+      isRunning: () => {
+        throw new Error('探针炸了');
+      },
+    });
+    assert.equal('stale' in broken, false, '探针报错时不得猜僵尸（不给错误动作）');
+    assert.equal('stale' in broken.runs[0], false, '当前轮同样不得带 stale');
+
+    for (const phase of ['failed', 'halted', 'needing-decision', 'done', 'staged']) {
+      await mutateTeam(stateRoot, sessionId, (team) => {
+        team.phase = phase;
+        return team;
+      });
+      const snap = await buildSnapshot({ stateRoot, captainSessionId: sessionId, isRunning: () => false });
+      assert.equal('stale' in snap, false, `phase=${phase} 不是 running，不得带 stale`);
+      assert.equal('stale' in snap.runs[0], false, `phase=${phase} 的当前轮不得带 stale`);
+    }
   });
 });

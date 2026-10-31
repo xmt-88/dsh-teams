@@ -20,7 +20,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { apply, Config } from '../index.js';
 import { buildSnapshot } from '../lib/web-routes.js';
 import { readField } from '../lib/config.js';
-import { readTasks, readTeam, stateRootOf, writeTasks, NOTE_MAX_CHARS } from '../lib/state.js';
+import { readTasks, readTeam, stateRootOf, writeTasks, NOTE_MAX_CHARS, mutateTeam } from '../lib/state.js';
 import { isRunning } from '../lib/scheduler.js';
 import { resetCaptainsForTests } from '../lib/captain.js';
 
@@ -154,6 +154,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
       '/plugins/dsh-teams/asset',
       '/plugins/dsh-teams/state',
       '/plugins/dsh-teams/stop',
+      '/plugins/dsh-teams/retry',
       '/plugins/dsh-teams/approve-start',
       '/plugins/dsh-teams/note',
       '/plugins/dsh-teams/roles/body',
@@ -163,6 +164,7 @@ test('插件注册了工具、提示段与状态路由', async () => {
     assert.ok(paths.some((path) => path.endsWith('/state')), '应有团队快照路由');
     assert.ok(paths.some((path) => path.endsWith('/asset')), '应有精灵图资源路由');
     assert.ok(paths.some((path) => path.endsWith('/stop')), '应有停止路由（面板的写操作之一）');
+    assert.ok(paths.some((path) => path.endsWith('/retry')), '应有继续路由（失败/停止/需决策/僵尸轮的出口）');
     assert.ok(paths.some((path) => path.endsWith('/approve-start')), '应有批准并启动路由');
     assert.ok(paths.some((path) => path.endsWith('/note')), '应有记录补充要求的路由');
     assert.ok(paths.some((path) => path.endsWith('/roles')), '应有角色库路由（GET/POST）');
@@ -773,6 +775,49 @@ test('HTTP：POST /roles 停用角色并返回新列表；不存在的角色 400
   });
 });
 
+test('HTTP：POST /retry 真实接线先取 Agent 再改盘；miss 时不重置任务，取到后真的启动', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir, 'session-retry-host');
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+    await callTool(ctx, 'teams_approve', {}, exec);
+    const stateRoot = stateRootOf(dir, '.dsh-teams');
+
+    // 制造「有失败任务可续跑」的终态（不跑真调度：本用例只验路由接线与顺序）
+    const graph = await readTasks(stateRoot, exec.agent.id);
+    const tasks = graph.tasks.map((task, index) =>
+      index === 0 ? { ...task, status: 'failed', failure: '夹具失败', updatedAt: new Date().toISOString() } : task,
+    );
+    await writeTasks(stateRoot, exec.agent.id, { ...graph, tasks });
+
+    // 宿主重启后登记表为空：agents.get(sessionId) 恒 miss
+    resetCaptainsForTests();
+    ctx.__agents = new Map();
+    const miss = await callRoute(ctx, '/plugins/dsh-teams/retry', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/retry',
+      body: { session: exec.agent.id },
+    });
+    assert.equal(miss.status, 200);
+    assert.equal(miss.body.started, false, '取不到活 Agent 必须如实失败');
+    assert.equal(miss.body.reasonCode, 'miss', '面板据此显示真实原因');
+    const unchanged = await readTasks(stateRoot, exec.agent.id);
+    assert.equal(unchanged.tasks[0].status, 'failed', 'resolve 必须在改盘之前：取不到 Agent 时任务不得被重置');
+
+    // 接上活 Agent（同进程登记/宿主 lookup 命中）：同一条路由真的开始派发
+    ctx.__agents = new Map([[exec.agent.id, exec.agent]]);
+    const started = await callRoute(ctx, '/plugins/dsh-teams/retry', {
+      method: 'POST',
+      url: '/plugins/dsh-teams/retry',
+      body: { session: exec.agent.id },
+    });
+    assert.equal(started.status, 200);
+    assert.equal(started.body.started, true, `应真的启动（reason=${started.body.reason ?? ''}）`);
+    assert.equal(started.body.mode, 'retry', '有失败任务时走重排模式');
+    assert.ok(started.body.retried >= 1);
+    await callTool(ctx, 'teams_stop', {}, exec);
+  });
+});
+
 test('HTTP：POST /roles 保存自定义角色（含触发词）后能在列表里看到', async () => {
   await withWorkspace(async ({ ctx }) => {
     const saved = await callRoute(ctx, '/plugins/dsh-teams/roles', {
@@ -1071,5 +1116,37 @@ test('HTTP：宿主取不到活 Agent 时，面板启动回 started=false + reas
     assert.match(out.body.reason, /没有活动的 Agent/);
     const team = await readTeam(join(dir, '.dsh-teams'), exec.agent.id);
     assert.notEqual(team.phase, 'running', '绝不能先写 running 而实际零派发');
+  });
+});
+
+test('HTTP：GET /state 真实接线把「磁盘 running + 内存无循环」标成 stale（宿主重启后的僵尸轮）', async () => {
+  await withWorkspace(async ({ dir, ctx }) => {
+    const exec = fakeExec(dir, 'session-zombie-host');
+    await callTool(ctx, 'teams_plan', { task: '给 README 补一节说明', force_path: 'fast' }, exec);
+    const stateRoot = stateRootOf(dir, '.dsh-teams');
+
+    // 宿主重启后的形态：磁盘 phase=running、任务停在 running，进程内 activeLoops 为空
+    const graph = await readTasks(stateRoot, exec.agent.id);
+    await writeTasks(stateRoot, exec.agent.id, {
+      ...graph,
+      tasks: graph.tasks.map((task, index) =>
+        index === 0 ? { ...task, status: 'running', updatedAt: new Date().toISOString() } : task,
+      ),
+    });
+    await mutateTeam(stateRoot, exec.agent.id, (team) => {
+      team.phase = 'running';
+      delete team.finishedAt;
+      return team;
+    });
+    assert.equal(isRunning(stateRoot, exec.agent.id), false, '内存里没有循环（僵尸轮前提）');
+
+    const out = await callRoute(ctx, '/plugins/dsh-teams/state', {
+      method: 'GET',
+      url: `/plugins/dsh-teams/state?session=${encodeURIComponent(exec.agent.id)}`,
+    });
+    assert.equal(out.status, 200);
+    assert.equal(out.body.team.phase, 'running', 'phase 本身不改写：只是多一个 stale 事实');
+    assert.equal(out.body.team.stale, true, '真实接线下也必须标出僵尸轮（面板据此显示「恢复派发」）');
+    assert.equal(out.body.team.runs[0].stale, true, '当前轮同样带 stale（面板按轮渲染）');
   });
 });

@@ -21,7 +21,7 @@ import { loadRoles, resolveRole, validateCustomRole, PERMISSION_TIERS, TIMEOUT_T
 import { stateRootOf, ensureTeam, readTeam, readTasks, mutateTeam, appendEvent, ensureStateDirs, userRolesDir, appendTeamNote } from './lib/state.js';
 import { writeFileAtomic } from './lib/state.js';
 import { authenticatedWebRoutes, registerStateRoutes } from './lib/web-routes.js';
-import { planTeam, approveTeam, startTeamRun, retryFailedTeam, stopRun, isRunning } from './lib/scheduler.js';
+import { planTeam, approveTeam, startTeamRun, retryFailedTeam, resumeTeam, stopRun, isRunning } from './lib/scheduler.js';
 import { setRoleEnabled, validateToggle } from './lib/role-state.js';
 import { registerCommands } from './lib/commands.js';
 import { resolveCaptain } from './lib/captain.js';
@@ -761,7 +761,9 @@ function registerTools(ctx, config) {
       async execute(args, exec) {
         const { agent, captainSessionId, workspace } = captainOf(exec);
         const retry = await retryFailedTeam({ config, captainSessionId, workspace });
-        if (!retry.started) return retry;
+        // 工具公开契约保持原样（不含 reasonCode）：面板路由才需要机器可读分支，
+        // 这里只把人类可读的 reason 透给模型；reasonCode 由 resumeTeam/HTTP 层使用。
+        if (!retry.started) return { started: false, reason: retry.reason };
 
         const started = await startTeamRun({
           ctx,
@@ -1116,6 +1118,29 @@ function installWebSurface(ctx, config) {
               workspace: args.workspace ?? resolved.workspace,
             });
           },
+          // 面板「继续 / 恢复派发」：必须先取到活 Agent（否则改盘后也起不来），
+          // 再交给与工具/命令同一个组合 resumeTeam（重排失败/受阻 → 启动）。
+          retryRun: (args) => {
+            const agents = ctx.get('agents');
+            const resolved = resolveCaptain({
+              captainSessionId: args.captainSessionId,
+              workspaceHint: args.workspace,
+              lookup: typeof agents?.get === 'function' ? (id) => agents.get(id) : undefined,
+              source: 'http',
+            });
+            if (!resolved.ok) {
+              return { started: false, reasonCode: resolved.reasonCode, reason: resolved.reason };
+            }
+            return resumeTeam({
+              ...args,
+              ctx,
+              config,
+              agent: resolved.agent,
+              workspace: args.workspace ?? resolved.workspace,
+            });
+          },
+          // 僵尸轮探针：快照只读盘，靠这个进程内事实判断「running 是否真在跑」
+          isRunning: (stateRoot, captainSessionId) => isRunning(stateRoot, captainSessionId),
         }),
       'dsh-teams: state route',
     );
